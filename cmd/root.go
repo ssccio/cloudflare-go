@@ -8,6 +8,7 @@ import (
 
 	"github.com/ssccio/cloudflare-go/cmd/dns"
 	"github.com/ssccio/cloudflare-go/cmd/rayid"
+	"github.com/ssccio/cloudflare-go/cmd/zones"
 )
 
 // GlobalFlags holds persistent flags shared by all subcommands.
@@ -56,4 +57,5 @@ func init() {
 
 	rootCmd.AddCommand(dns.Cmd)
 	rootCmd.AddCommand(rayid.Cmd)
+	rootCmd.AddCommand(zones.Cmd)
 }
