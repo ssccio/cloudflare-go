@@ -148,12 +148,14 @@ func runLookup(cmd *cobra.Command, args []string) error {
 
 // queryFirewallEvents calls the Cloudflare GraphQL API to look up firewall
 // events by Ray ID within a specific zone.
+// Variables are passed separately from the query string to prevent GraphQL injection.
 func queryFirewallEvents(ctx context.Context, token, zoneID, rayID string) ([]FirewallEvent, error) {
-	query := `{
+	const query = `
+query FirewallEventsByRayID($zoneTag: string!, $rayName: string!) {
   viewer {
-    zones(filter: {zoneTag: "` + zoneID + `"}) {
+    zones(filter: {zoneTag: $zoneTag}) {
       firewallEventsAdaptive(
-        filter: {rayName: "` + rayID + `"}
+        filter: {rayName: $rayName}
         limit: 10
         orderBy: [datetime_DESC]
       ) {
@@ -176,7 +178,13 @@ func queryFirewallEvents(ctx context.Context, token, zoneID, rayID string) ([]Fi
   }
 }`
 
-	payload := map[string]string{"query": query}
+	payload := map[string]any{
+		"query": query,
+		"variables": map[string]string{
+			"zoneTag": zoneID,
+			"rayName": rayID,
+		},
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling query: %w", err)
