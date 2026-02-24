@@ -44,6 +44,8 @@ cf --token your_token_here dns list --zone ZONE_ID
 | Flag | Description |
 |------|-------------|
 | `--json` | Machine-readable JSON output (ideal for AI assistants and scripts) |
+| `--toon` | Token-Oriented Object Notation output — 30-60% fewer tokens than JSON, ideal for LLMs |
+| `--query` | JMESPath expression to filter `--json` or `--toon` output (e.g. `'[].id'`) |
 | `--no-color` | Disable ANSI color output |
 | `-q, --quiet` | Suppress progress and informational lines |
 | `--token` | Cloudflare API token (overrides `CLOUDFLARE_API_TOKEN`) |
@@ -70,9 +72,48 @@ cf dns create --zone ZONE_ID --name example.com --type MX --content mail.example
 # TXT record
 cf dns create --zone ZONE_ID --name example.com --type TXT --content "v=spf1 include:example.com ~all"
 
+# NS record — delegate a subdomain to another provider (e.g. Route 53)
+cf dns create --zone ZONE_ID --name aws.example.com --type NS --content ns-123.awsdns-45.com --ttl 172800
+cf dns create --zone ZONE_ID --name aws.example.com --type NS --content ns-456.awsdns-67.net --ttl 172800
+cf dns create --zone ZONE_ID --name aws.example.com --type NS --content ns-789.awsdns-01.org --ttl 172800
+cf dns create --zone ZONE_ID --name aws.example.com --type NS --content ns-012.awsdns-23.co.uk --ttl 172800
+
 # JSON output for AI assistants
 cf dns create --zone ZONE_ID --name api --type A --content 1.2.3.4 --json
 ```
+
+#### Delegating a subdomain to Route 53
+
+To hand off `aws.example.com` (and everything beneath it) to AWS Route 53, add the four NS records
+that Route 53 assigns to your hosted zone. Cloudflare will stop answering DNS for that subtree and
+forward resolution to Route 53 instead.
+
+```bash
+# 1. Look up your zone ID (or use --domain to skip this step)
+cf zones lookup example.com
+
+# 2. Add each Route 53 nameserver as an NS record
+#    Replace ns-*.awsdns-*.* with the values from your Route 53 hosted zone
+ZONE_ID=your_zone_id
+for ns in \
+  ns-123.awsdns-45.com \
+  ns-456.awsdns-67.net \
+  ns-789.awsdns-01.org \
+  ns-012.awsdns-23.co.uk; do
+  cf dns create --zone $ZONE_ID \
+    --name aws.example.com \
+    --type NS \
+    --content "$ns" \
+    --ttl 172800
+done
+
+# 3. Verify the NS records were created
+cf dns list --zone $ZONE_ID --name aws.example.com --type NS
+```
+
+> **TTL:** 172800 (48 hours) is the standard delegation TTL — it controls how long resolvers cache
+> the delegation before re-checking. Use a lower value (e.g. `3600`) while testing so changes
+> propagate faster.
 
 #### List records
 
@@ -127,18 +168,26 @@ User Agent      curl/7.68.0
 
 ## AI Assistant Usage
 
-When using `cf` from an AI assistant (Claude, GPT, etc.), always pass `--json`:
+When using `cf` from an AI assistant (Claude, GPT, etc.), use `--json` for full output or `--toon`
+for token-efficient output. Both support `--query` for JMESPath filtering.
 
 ```bash
 # Create record and capture result
 RESULT=$(cf dns create --zone $ZONE_ID --name api --type A --content 1.2.3.4 --json)
 RECORD_ID=$(echo "$RESULT" | jq -r .id)
 
-# List all A records as JSON
-cf dns list --zone $ZONE_ID --type A --json | jq '.[].content'
+# List all A records, return only names
+cf dns list --zone $ZONE_ID --type A --json --query '[].name'
 
-# Investigate a Ray ID
-cf rayid lookup $RAY_ID --zone $ZONE_ID --json | jq '{action: .events[0].action, rule: .events[0].ruleId}'
+# Investigate a Ray ID — full event
+cf rayid lookup $RAY_ID --zone $ZONE_ID --json
+
+# Extract just action and ray_id using --query (no jq needed)
+cf rayid lookup $RAY_ID --zone $ZONE_ID --json --query 'events[*].{ray_id: ray_id, action: action}'
+
+# Token-efficient output for LLM context windows
+cf dns list --domain example.com --toon
+cf rayid lookup $RAY_ID --domain example.com --toon --query 'events[*].{ray_id: ray_id, action: action}'
 ```
 
 The `--json` flag:
