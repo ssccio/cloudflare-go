@@ -13,10 +13,10 @@ import (
 )
 
 type zoneResult struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Plan   string `json:"plan"`
+	ID     string `json:"id"     toon:"id"`
+	Name   string `json:"name"   toon:"name"`
+	Status string `json:"status" toon:"status"`
+	Plan   string `json:"plan"   toon:"plan"`
 }
 
 var listCmd = &cobra.Command{
@@ -32,11 +32,13 @@ Examples:
 
 func runList(cmd *cobra.Command, _ []string) error {
 	jsonFlag, _ := cmd.Root().PersistentFlags().GetBool("json")
+	toonFlag, _ := cmd.Root().PersistentFlags().GetBool("toon")
 	noColor, _ := cmd.Root().PersistentFlags().GetBool("no-color")
 	quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
 	token, _ := cmd.Root().PersistentFlags().GetString("token")
+	query, _ := cmd.Root().PersistentFlags().GetString("query")
 
-	p := output.New(jsonFlag, quiet, noColor)
+	p := output.New(jsonFlag, toonFlag, quiet, noColor, query)
 
 	cfClient, err := client.New(client.Config{Token: token})
 	if err != nil {
@@ -62,8 +64,8 @@ func runList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if jsonFlag {
-		p.PrintJSON(results)
+	if p.JSON || p.TOON {
+		p.PrintResult(results)
 		return nil
 	}
 

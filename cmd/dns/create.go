@@ -25,17 +25,17 @@ var (
 	createComment string
 )
 
-// dnsRecordResult is the JSON-serialisable result for --json mode.
+// dnsRecordResult is the serialisable result for --json / --toon output.
 type dnsRecordResult struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Content    string `json:"content"`
-	TTL        int    `json:"ttl"`
-	Proxied    bool   `json:"proxied"`
-	Comment    string `json:"comment,omitempty"`
-	CreatedOn  string `json:"created_on,omitempty"`
-	ModifiedOn string `json:"modified_on,omitempty"`
+	ID         string `json:"id"         toon:"id"`
+	Name       string `json:"name"       toon:"name"`
+	Type       string `json:"type"       toon:"type"`
+	Content    string `json:"content"    toon:"content"`
+	TTL        int    `json:"ttl"        toon:"ttl"`
+	Proxied    bool   `json:"proxied"    toon:"proxied"`
+	Comment    string `json:"comment,omitempty"    toon:"comment"`
+	CreatedOn  string `json:"created_on,omitempty" toon:"created_on"`
+	ModifiedOn string `json:"modified_on,omitempty" toon:"modified_on"`
 }
 
 var createCmd = &cobra.Command{
@@ -72,11 +72,13 @@ func init() {
 
 func runCreate(cmd *cobra.Command, _ []string) error {
 	jsonFlag, _ := cmd.Root().PersistentFlags().GetBool("json")
+	toonFlag, _ := cmd.Root().PersistentFlags().GetBool("toon")
 	noColor, _ := cmd.Root().PersistentFlags().GetBool("no-color")
 	quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
 	token, _ := cmd.Root().PersistentFlags().GetString("token")
+	query, _ := cmd.Root().PersistentFlags().GetString("query")
 
-	p := output.New(jsonFlag, quiet, noColor)
+	p := output.New(jsonFlag, toonFlag, quiet, noColor, query)
 
 	if createZone == "" && createDomain == "" {
 		err := fmt.Errorf("one of --zone or --domain is required")
@@ -131,8 +133,8 @@ func runCreate(cmd *cobra.Command, _ []string) error {
 		ModifiedOn: resp.ModifiedOn.String(),
 	}
 
-	if jsonFlag {
-		p.PrintJSON(result)
+	if p.JSON || p.TOON {
+		p.PrintResult(result)
 		return nil
 	}
 

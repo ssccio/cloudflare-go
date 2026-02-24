@@ -28,11 +28,13 @@ func runLookup(cmd *cobra.Command, args []string) error {
 	domain := args[0]
 
 	jsonFlag, _ := cmd.Root().PersistentFlags().GetBool("json")
+	toonFlag, _ := cmd.Root().PersistentFlags().GetBool("toon")
 	noColor, _ := cmd.Root().PersistentFlags().GetBool("no-color")
 	quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
 	token, _ := cmd.Root().PersistentFlags().GetString("token")
+	query, _ := cmd.Root().PersistentFlags().GetString("query")
 
-	p := output.New(jsonFlag, quiet, noColor)
+	p := output.New(jsonFlag, toonFlag, quiet, noColor, query)
 
 	cfClient, err := client.New(client.Config{Token: token})
 	if err != nil {
@@ -66,11 +68,11 @@ func runLookup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("zone not found: %s", domain)
 	}
 
-	if jsonFlag {
+	if p.JSON || p.TOON {
 		if len(found) == 1 {
-			p.PrintJSON(found[0])
+			p.PrintResult(found[0])
 		} else {
-			p.PrintJSON(found)
+			p.PrintResult(found)
 		}
 		return nil
 	}

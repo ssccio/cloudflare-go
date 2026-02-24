@@ -45,11 +45,13 @@ func init() {
 
 func runList(cmd *cobra.Command, _ []string) error {
 	jsonFlag, _ := cmd.Root().PersistentFlags().GetBool("json")
+	toonFlag, _ := cmd.Root().PersistentFlags().GetBool("toon")
 	noColor, _ := cmd.Root().PersistentFlags().GetBool("no-color")
 	quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
 	token, _ := cmd.Root().PersistentFlags().GetString("token")
+	query, _ := cmd.Root().PersistentFlags().GetString("query")
 
-	p := output.New(jsonFlag, quiet, noColor)
+	p := output.New(jsonFlag, toonFlag, quiet, noColor, query)
 
 	if listZone == "" && listDomain == "" {
 		err := fmt.Errorf("one of --zone or --domain is required")
@@ -103,8 +105,8 @@ func runList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if jsonFlag {
-		p.PrintJSON(records)
+	if p.JSON || p.TOON {
+		p.PrintResult(records)
 		return nil
 	}
 

@@ -26,27 +26,27 @@ var (
 
 // FirewallEvent represents a single event from the GraphQL firewallEventsAdaptive dataset.
 type FirewallEvent struct {
-	Action             string    `json:"action"`
-	ClientAsn          string    `json:"clientAsn"`
-	ClientCountryName  string    `json:"clientCountryName"`
-	ClientIP           string    `json:"clientIP"`
-	ClientRequestHost  string    `json:"clientRequestHTTPHost"`
-	ClientRequestPath  string    `json:"clientRequestPath"`
-	ClientRequestQuery string    `json:"clientRequestQuery"`
-	Datetime           time.Time `json:"datetime"`
-	RayName            string    `json:"rayName"`
-	RuleID             string    `json:"ruleId"`
-	Source             string    `json:"source"`
-	UserAgent          string    `json:"userAgent"`
+	Action             string    `json:"action"                toon:"action"`
+	ClientAsn          string    `json:"clientAsn"             toon:"asn"`
+	ClientCountryName  string    `json:"clientCountryName"     toon:"country"`
+	ClientIP           string    `json:"clientIP"              toon:"ip"`
+	ClientRequestHost  string    `json:"clientRequestHTTPHost" toon:"host"`
+	ClientRequestPath  string    `json:"clientRequestPath"     toon:"path"`
+	ClientRequestQuery string    `json:"clientRequestQuery"    toon:"query"`
+	Datetime           time.Time `json:"datetime"              toon:"datetime"`
+	RayName            string    `json:"rayName"               toon:"ray_id"`
+	RuleID             string    `json:"ruleId"                toon:"rule_id"`
+	Source             string    `json:"source"                toon:"source"`
+	UserAgent          string    `json:"userAgent"             toon:"ua"`
 }
 
-// RayIDResult is the top-level result for --json output.
+// RayIDResult is the top-level result for --json / --toon output.
 type RayIDResult struct {
-	RayID  string          `json:"ray_id"`
-	ZoneID string          `json:"zone_id"`
-	Since  string          `json:"since"`
-	Until  string          `json:"until"`
-	Events []FirewallEvent `json:"events"`
+	RayID  string          `json:"ray_id"  toon:"ray_id"`
+	ZoneID string          `json:"zone_id" toon:"zone_id"`
+	Since  string          `json:"since"   toon:"since"`
+	Until  string          `json:"until"   toon:"until"`
+	Events []FirewallEvent `json:"events"  toon:"events"`
 }
 
 const graphqlEndpoint = "https://api.cloudflare.com/client/v4/graphql"
@@ -81,11 +81,13 @@ func runLookup(cmd *cobra.Command, args []string) error {
 	rayID := args[0]
 
 	jsonFlag, _ := cmd.Root().PersistentFlags().GetBool("json")
+	toonFlag, _ := cmd.Root().PersistentFlags().GetBool("toon")
 	noColor, _ := cmd.Root().PersistentFlags().GetBool("no-color")
 	quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
 	token, _ := cmd.Root().PersistentFlags().GetString("token")
+	query, _ := cmd.Root().PersistentFlags().GetString("query")
 
-	p := output.New(jsonFlag, quiet, noColor)
+	p := output.New(jsonFlag, toonFlag, quiet, noColor, query)
 
 	if token == "" {
 		token = os.Getenv("CLOUDFLARE_API_TOKEN")
@@ -158,8 +160,8 @@ func runLookup(cmd *cobra.Command, args []string) error {
 		Events: events,
 	}
 
-	if jsonFlag {
-		p.PrintJSON(result)
+	if p.JSON || p.TOON {
+		p.PrintResult(result)
 		return nil
 	}
 

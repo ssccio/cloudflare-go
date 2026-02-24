@@ -1,5 +1,6 @@
 // Package output provides human-friendly and machine-friendly output rendering.
 // When --json is set, all output is pure JSON to stdout with no ANSI codes.
+// When --toon is set, output is Token-Oriented Object Notation (30-60% fewer tokens than JSON).
 // When running in a TTY, styled tables and spinners are used.
 package output
 
@@ -11,15 +12,19 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	"github.com/jmespath/go-jmespath"
 	"github.com/mattn/go-isatty"
 	"github.com/muesli/termenv"
+	toonlib "github.com/toon-format/toon-go"
 )
 
 // Printer handles all output formatting decisions.
 type Printer struct {
 	JSON    bool
+	TOON    bool
 	Quiet   bool
 	NoColor bool
+	Query   string
 	Out     io.Writer
 	ErrOut  io.Writer
 }
@@ -40,22 +45,25 @@ var (
 )
 
 // New constructs a Printer based on flag values.
-// JSON mode implies quiet and disables colors.
-func New(jsonFlag, quietFlag, noColorFlag bool) *Printer {
-	noColor := noColorFlag || jsonFlag
+// JSON and TOON modes imply quiet and disable colors.
+func New(jsonFlag, toonFlag, quietFlag, noColorFlag bool, query string) *Printer {
+	machineMode := jsonFlag || toonFlag
+	noColor := noColorFlag || machineMode
 	if noColor || !isatty.IsTerminal(os.Stdout.Fd()) {
 		lipgloss.SetColorProfile(termenv.Ascii)
 	}
 	return &Printer{
 		JSON:    jsonFlag,
-		Quiet:   quietFlag || jsonFlag,
+		TOON:    toonFlag,
+		Quiet:   quietFlag || machineMode,
 		NoColor: noColor,
+		Query:   query,
 		Out:     os.Stdout,
 		ErrOut:  os.Stderr,
 	}
 }
 
-// PrintJSON emits v as indented JSON to stdout regardless of mode.
+// PrintJSON emits v as indented JSON to stdout.
 func (p *Printer) PrintJSON(v any) {
 	enc := json.NewEncoder(p.Out)
 	enc.SetIndent("", "  ")
@@ -64,7 +72,55 @@ func (p *Printer) PrintJSON(v any) {
 	}
 }
 
-// Info prints a progress/info line to stderr. Suppressed in JSON/quiet mode.
+// PrintTOON emits v as Token-Oriented Object Notation to stdout.
+// TOON is 30-60% more token-efficient than JSON for LLM consumption.
+func (p *Printer) PrintTOON(v any) {
+	s, err := toonlib.MarshalString(v, toonlib.WithLengthMarkers(true))
+	if err != nil {
+		fmt.Fprintf(p.ErrOut, "error: could not encode TOON: %v\n", err)
+		return
+	}
+	fmt.Fprint(p.Out, s)
+}
+
+// PrintResult outputs v as JSON or TOON, applying --query (JMESPath) if set.
+// Commands should call this instead of PrintJSON/PrintTOON directly.
+func (p *Printer) PrintResult(v any) {
+	result := v
+	if p.Query != "" {
+		filtered, err := applyJMESPath(v, p.Query)
+		if err != nil {
+			fmt.Fprintf(p.ErrOut, "error: invalid --query expression: %v\n", err)
+			return
+		}
+		result = filtered
+	}
+	if p.JSON {
+		p.PrintJSON(result)
+	} else if p.TOON {
+		p.PrintTOON(result)
+	}
+}
+
+// applyJMESPath evaluates a JMESPath expression against v.
+// v is round-tripped through JSON so struct tags are respected.
+func applyJMESPath(v any, expr string) (any, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling for query: %w", err)
+	}
+	var generic any
+	if err := json.Unmarshal(data, &generic); err != nil {
+		return nil, fmt.Errorf("parsing for query: %w", err)
+	}
+	result, err := jmespath.Search(expr, generic)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Info prints a progress/info line to stderr. Suppressed in machine modes.
 func (p *Printer) Info(format string, args ...any) {
 	if p.Quiet {
 		return
@@ -72,7 +128,7 @@ func (p *Printer) Info(format string, args ...any) {
 	fmt.Fprintf(p.ErrOut, dimStyle.Render(fmt.Sprintf(format, args...))+"\n")
 }
 
-// Success prints a success message to stderr. Suppressed in JSON/quiet mode.
+// Success prints a success message to stderr. Suppressed in machine modes.
 func (p *Printer) Success(format string, args ...any) {
 	if p.Quiet {
 		return
