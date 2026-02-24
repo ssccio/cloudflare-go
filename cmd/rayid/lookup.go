@@ -24,20 +24,37 @@ var (
 	lookupUntil  string
 )
 
-// FirewallEvent represents a single event from the GraphQL firewallEventsAdaptive dataset.
+// firewallEventRaw matches the Cloudflare GraphQL field names for deserialization only.
+type firewallEventRaw struct {
+	Action             string    `json:"action"`
+	ClientAsn          string    `json:"clientAsn"`
+	ClientCountryName  string    `json:"clientCountryName"`
+	ClientIP           string    `json:"clientIP"`
+	ClientRequestHost  string    `json:"clientRequestHTTPHost"`
+	ClientRequestPath  string    `json:"clientRequestPath"`
+	ClientRequestQuery string    `json:"clientRequestQuery"`
+	Datetime           time.Time `json:"datetime"`
+	RayName            string    `json:"rayName"`
+	RuleID             string    `json:"ruleId"`
+	Source             string    `json:"source"`
+	UserAgent          string    `json:"userAgent"`
+}
+
+// FirewallEvent is the user-facing struct with clean, consistent field names.
+// JSON tags match TOON tags so --json, --toon, and --query all use the same names.
 type FirewallEvent struct {
-	Action             string    `json:"action"                toon:"action"`
-	ClientAsn          string    `json:"clientAsn"             toon:"asn"`
-	ClientCountryName  string    `json:"clientCountryName"     toon:"country"`
-	ClientIP           string    `json:"clientIP"              toon:"ip"`
-	ClientRequestHost  string    `json:"clientRequestHTTPHost" toon:"host"`
-	ClientRequestPath  string    `json:"clientRequestPath"     toon:"path"`
-	ClientRequestQuery string    `json:"clientRequestQuery"    toon:"query"`
-	Datetime           time.Time `json:"datetime"              toon:"datetime"`
-	RayName            string    `json:"rayName"               toon:"ray_id"`
-	RuleID             string    `json:"ruleId"                toon:"rule_id"`
-	Source             string    `json:"source"                toon:"source"`
-	UserAgent          string    `json:"userAgent"             toon:"ua"`
+	Action    string    `json:"action"   toon:"action"`
+	ASN       string    `json:"asn"      toon:"asn"`
+	Country   string    `json:"country"  toon:"country"`
+	IP        string    `json:"ip"       toon:"ip"`
+	Host      string    `json:"host"     toon:"host"`
+	Path      string    `json:"path"     toon:"path"`
+	Query     string    `json:"query"    toon:"query"`
+	Datetime  time.Time `json:"datetime" toon:"datetime"`
+	RayID     string    `json:"ray_id"   toon:"ray_id"`
+	RuleID    string    `json:"rule_id"  toon:"rule_id"`
+	Source    string    `json:"source"   toon:"source"`
+	UserAgent string    `json:"ua"       toon:"ua"`
 }
 
 // RayIDResult is the top-level result for --json / --toon output.
@@ -177,22 +194,22 @@ func runLookup(cmd *cobra.Command, args []string) error {
 		if len(events) > 1 {
 			fmt.Fprintf(cmd.OutOrStdout(), "\nEvent %d of %d\n", i+1, len(events))
 		}
-		url := ev.ClientRequestHost + ev.ClientRequestPath
-		if ev.ClientRequestQuery != "" {
-			url += "?" + ev.ClientRequestQuery
+		url := ev.Host + ev.Path
+		if ev.Query != "" {
+			url += "?" + ev.Query
 		}
 		p.KV([][2]string{
-			{"Ray ID", rayID},
+			{"Ray ID", ev.RayID},
 			{"Datetime", ev.Datetime.Format(time.RFC3339)},
 			{"Action", strings.ToUpper(ev.Action)},
 			{"Source", ev.Source},
 			{"Rule ID", ev.RuleID},
-			{"Client IP", ev.ClientIP},
-			{"Country", ev.ClientCountryName},
-			{"ASN", ev.ClientAsn},
-			{"Host", ev.ClientRequestHost},
-			{"Path", ev.ClientRequestPath},
-			{"Query", ev.ClientRequestQuery},
+			{"Client IP", ev.IP},
+			{"Country", ev.Country},
+			{"ASN", ev.ASN},
+			{"Host", ev.Host},
+			{"Path", ev.Path},
+			{"Query", ev.Query},
 			{"User Agent", ev.UserAgent},
 			{"URL", url},
 		})
@@ -280,7 +297,7 @@ query FirewallEventsByRayID(
 		Data struct {
 			Viewer struct {
 				Zones []struct {
-					FirewallEventsAdaptive []FirewallEvent `json:"firewallEventsAdaptive"`
+					FirewallEventsAdaptive []firewallEventRaw `json:"firewallEventsAdaptive"`
 				} `json:"zones"`
 			} `json:"viewer"`
 		} `json:"data"`
@@ -305,7 +322,25 @@ query FirewallEventsByRayID(
 		return nil, nil
 	}
 
-	return gqlResp.Data.Viewer.Zones[0].FirewallEventsAdaptive, nil
+	raw := gqlResp.Data.Viewer.Zones[0].FirewallEventsAdaptive
+	events := make([]FirewallEvent, len(raw))
+	for i, r := range raw {
+		events[i] = FirewallEvent{
+			Action:    r.Action,
+			ASN:       r.ClientAsn,
+			Country:   r.ClientCountryName,
+			IP:        r.ClientIP,
+			Host:      r.ClientRequestHost,
+			Path:      r.ClientRequestPath,
+			Query:     r.ClientRequestQuery,
+			Datetime:  r.Datetime,
+			RayID:     r.RayName,
+			RuleID:    r.RuleID,
+			Source:    r.Source,
+			UserAgent: r.UserAgent,
+		}
+	}
+	return events, nil
 }
 
 // parseDuration parses a human duration string like "1h", "24h", "48h".
