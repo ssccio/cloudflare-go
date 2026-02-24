@@ -1,6 +1,7 @@
 package rayid
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,68 +20,51 @@ import (
 var (
 	lookupZone   string
 	lookupDomain string
+	lookupSince  string
+	lookupUntil  string
 )
 
-// LogEntry holds the fields we request from the Logpull API.
-// Field names must match Cloudflare Logpull schema exactly.
-type LogEntry struct {
-	RayID                  string   `json:"RayID"`
-	EdgeStartTimestamp     string   `json:"EdgeStartTimestamp"`
-	ClientIP               string   `json:"ClientIP"`
-	ClientCountry          string   `json:"ClientCountry"`
-	ClientASN              int64    `json:"ClientASN"`
-	ClientRequestHost      string   `json:"ClientRequestHost"`
-	ClientRequestMethod    string   `json:"ClientRequestMethod"`
-	ClientRequestPath      string   `json:"ClientRequestPath"`
-	ClientRequestURI       string   `json:"ClientRequestURI"`
-	ClientRequestUserAgent string   `json:"ClientRequestUserAgent"`
-	ClientRequestProtocol  string   `json:"ClientRequestProtocol"`
-	EdgeResponseStatus     int      `json:"EdgeResponseStatus"`
-	WAFAction              string   `json:"WAFAction"`
-	WAFRuleID              string   `json:"WAFRuleID"`
-	WAFRuleMessage         string   `json:"WAFRuleMessage"`
-	FirewallMatchesActions []string `json:"FirewallMatchesActions"`
-	FirewallMatchesSources []string `json:"FirewallMatchesSources"`
-	FirewallMatchesRuleIDs []string `json:"FirewallMatchesRuleIDs"`
-	SecurityLevel          string   `json:"SecurityLevel"`
+// FirewallEvent represents a single event from the GraphQL firewallEventsAdaptive dataset.
+type FirewallEvent struct {
+	Action             string    `json:"action"`
+	ClientAsn          string    `json:"clientAsn"`
+	ClientCountryName  string    `json:"clientCountryName"`
+	ClientIP           string    `json:"clientIP"`
+	ClientRequestHost  string    `json:"clientRequestHTTPHost"`
+	ClientRequestPath  string    `json:"clientRequestPath"`
+	ClientRequestQuery string    `json:"clientRequestQuery"`
+	Datetime           time.Time `json:"datetime"`
+	RayName            string    `json:"rayName"`
+	RuleID             string    `json:"ruleId"`
+	Source             string    `json:"source"`
+	UserAgent          string    `json:"userAgent"`
 }
 
 // RayIDResult is the top-level result for --json output.
 type RayIDResult struct {
-	RayID   string     `json:"ray_id"`
-	ZoneID  string     `json:"zone_id"`
-	Entries []LogEntry `json:"entries"`
+	RayID  string          `json:"ray_id"`
+	ZoneID string          `json:"zone_id"`
+	Since  string          `json:"since"`
+	Until  string          `json:"until"`
+	Events []FirewallEvent `json:"events"`
 }
 
-// logpullFields is the comma-separated list of fields to request.
-// Must be literal commas — the SDK URL-encodes them, so we use direct HTTP.
-const logpullFields = "RayID,EdgeStartTimestamp,ClientIP,ClientCountry,ClientASN," +
-	"ClientRequestHost,ClientRequestMethod,ClientRequestPath,ClientRequestURI," +
-	"ClientRequestProtocol,ClientRequestUserAgent," +
-	"EdgeResponseStatus,WAFAction,WAFRuleID,WAFRuleMessage," +
-	"FirewallMatchesActions,FirewallMatchesSources,FirewallMatchesRuleIDs," +
-	"SecurityLevel"
-
-const logpullBase = "https://api.cloudflare.com/client/v4"
+const graphqlEndpoint = "https://api.cloudflare.com/client/v4/graphql"
 
 var lookupCmd = &cobra.Command{
 	Use:   "lookup <ray-id>",
 	Short: "Look up a Cloudflare Ray ID",
 	Long: `Look up a Cloudflare Ray ID to retrieve the action taken,
-firewall rule matched, client details, and full request metadata.
+firewall rule matched, client details, and request metadata.
 
-The Ray ID is visible in the CF-Ray response header on any request
-proxied through Cloudflare.
-
-Uses the Cloudflare Logpull REST API (GET /zones/{zone_id}/logs/rayids/{id}).
-Either --zone or --domain is required to scope the query.
-
-Note: Logpull requires the Logs: Read permission on your API token.
+Queries the Cloudflare GraphQL Security Analytics API.
+Use --since / --until to narrow the time window (reduces rate limit usage).
+Either --zone or --domain is required.
 
 Examples:
-  cf rayid lookup 7f9b3c1a4e5d6f8a --zone ZONE_ID
   cf rayid lookup 7f9b3c1a4e5d6f8a --domain example.com
-  cf rayid lookup 7f9b3c1a4e5d6f8a --domain example.com --json`,
+  cf rayid lookup 7f9b3c1a4e5d6f8a --zone ZONE_ID --since 2h
+  cf rayid lookup 7f9b3c1a4e5d6f8a --zone ZONE_ID --since 24h --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runLookup,
 }
@@ -88,6 +72,8 @@ Examples:
 func init() {
 	lookupCmd.Flags().StringVar(&lookupZone, "zone", "", "Zone ID to scope the search")
 	lookupCmd.Flags().StringVar(&lookupDomain, "domain", "", "Domain name (resolved to zone ID automatically)")
+	lookupCmd.Flags().StringVar(&lookupSince, "since", "24h", "How far back to search (e.g. 1h, 6h, 24h, 48h)")
+	lookupCmd.Flags().StringVar(&lookupUntil, "until", "", "End of search window (RFC3339 or relative like 1h); defaults to now")
 	lookupCmd.MarkFlagsMutuallyExclusive("zone", "domain")
 }
 
@@ -131,18 +117,45 @@ func runLookup(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	p.Info("Looking up Ray ID %s…", rayID)
-
-	entries, err := fetchRayID(cmd.Context(), token, zoneID, rayID)
+	// Parse time window.
+	until := time.Now().UTC()
+	if lookupUntil != "" {
+		d, err := parseDuration(lookupUntil)
+		if err == nil {
+			until = time.Now().UTC().Add(-d)
+		} else {
+			until, err = time.Parse(time.RFC3339, lookupUntil)
+			if err != nil {
+				p.Error("invalid --until value %q: use RFC3339 or a duration like 1h", lookupUntil)
+				return err
+			}
+		}
+	}
+	sinceDur, err := parseDuration(lookupSince)
 	if err != nil {
-		p.Error("Logpull API error: %v", err)
+		p.Error("invalid --since value %q: use a duration like 1h, 6h, 24h", lookupSince)
+		return err
+	}
+	since := until.Add(-sinceDur)
+
+	p.Info("Searching %s window (%s → %s)…",
+		lookupSince,
+		since.Format("2006-01-02 15:04 UTC"),
+		until.Format("2006-01-02 15:04 UTC"),
+	)
+
+	events, err := queryFirewallEvents(cmd.Context(), token, zoneID, rayID, since, until)
+	if err != nil {
+		p.Error("GraphQL query failed: %v", err)
 		return err
 	}
 
 	result := RayIDResult{
-		RayID:   rayID,
-		ZoneID:  zoneID,
-		Entries: entries,
+		RayID:  rayID,
+		ZoneID: zoneID,
+		Since:  since.Format(time.RFC3339),
+		Until:  until.Format(time.RFC3339),
+		Events: events,
 	}
 
 	if jsonFlag {
@@ -150,54 +163,98 @@ func runLookup(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if len(entries) == 0 {
-		p.Info("No log entries found for Ray ID %s.", rayID)
-		p.Info("The ray ID may be outside the retention window, or your token may need the 'Logs: Read' permission.")
+	if len(events) == 0 {
+		p.Info("No firewall events found for Ray ID %s in the %s window.", rayID, lookupSince)
+		p.Info("Try a wider window with --since 48h or --since 72h.")
 		return nil
 	}
 
-	for i, e := range entries {
-		if len(entries) > 1 {
-			fmt.Fprintf(cmd.OutOrStdout(), "\nEntry %d of %d\n", i+1, len(entries))
+	for i, ev := range events {
+		if len(events) > 1 {
+			fmt.Fprintf(cmd.OutOrStdout(), "\nEvent %d of %d\n", i+1, len(events))
+		}
+		url := ev.ClientRequestHost + ev.ClientRequestPath
+		if ev.ClientRequestQuery != "" {
+			url += "?" + ev.ClientRequestQuery
 		}
 		p.KV([][2]string{
-			{"Ray ID", e.RayID},
-			{"Timestamp", e.EdgeStartTimestamp},
-			{"Status", fmt.Sprintf("%d", e.EdgeResponseStatus)},
-			{"Security Level", e.SecurityLevel},
-			{"WAF Action", e.WAFAction},
-			{"WAF Rule ID", e.WAFRuleID},
-			{"WAF Rule", e.WAFRuleMessage},
-			{"FW Actions", strings.Join(e.FirewallMatchesActions, ", ")},
-			{"FW Sources", strings.Join(e.FirewallMatchesSources, ", ")},
-			{"FW Rule IDs", strings.Join(e.FirewallMatchesRuleIDs, ", ")},
-			{"Client IP", e.ClientIP},
-			{"Country", e.ClientCountry},
-			{"ASN", fmt.Sprintf("%d", e.ClientASN)},
-			{"Method", e.ClientRequestMethod},
-			{"Protocol", e.ClientRequestProtocol},
-			{"Host", e.ClientRequestHost},
-			{"URI", e.ClientRequestURI},
-			{"User Agent", e.ClientRequestUserAgent},
+			{"Ray ID", rayID},
+			{"Datetime", ev.Datetime.Format(time.RFC3339)},
+			{"Action", strings.ToUpper(ev.Action)},
+			{"Source", ev.Source},
+			{"Rule ID", ev.RuleID},
+			{"Client IP", ev.ClientIP},
+			{"Country", ev.ClientCountryName},
+			{"ASN", ev.ClientAsn},
+			{"Host", ev.ClientRequestHost},
+			{"Path", ev.ClientRequestPath},
+			{"Query", ev.ClientRequestQuery},
+			{"User Agent", ev.UserAgent},
+			{"URL", url},
 		})
 	}
 	return nil
 }
 
-// fetchRayID queries the Cloudflare Logpull REST API directly using net/http.
-// We bypass the SDK here because the SDK URL-encodes commas in query params,
-// but the Logpull API requires literal comma-separated field names.
-func fetchRayID(ctx context.Context, token, zoneID, rayID string) ([]LogEntry, error) {
-	// Build URL with literal commas (not %2C) in the fields parameter.
-	url := fmt.Sprintf("%s/zones/%s/logs/rayids/%s?fields=%s&timestamps=rfc3339",
-		logpullBase, zoneID, rayID, logpullFields)
+// queryFirewallEvents queries the Cloudflare GraphQL Security Analytics API.
+// A time window is required to reduce quota usage and avoid rate limits.
+// Variables are parameterized to prevent GraphQL injection.
+func queryFirewallEvents(ctx context.Context, token, zoneID, rayID string, since, until time.Time) ([]FirewallEvent, error) {
+	const query = `
+query FirewallEventsByRayID(
+  $zoneTag: string!
+  $rayName: string!
+  $since: Time!
+  $until: Time!
+) {
+  viewer {
+    zones(filter: {zoneTag: $zoneTag}) {
+      firewallEventsAdaptive(
+        filter: {
+          rayName: $rayName
+          datetime_geq: $since
+          datetime_leq: $until
+        }
+        limit: 10
+        orderBy: [datetime_DESC]
+      ) {
+        action
+        clientAsn
+        clientCountryName
+        clientIP
+        clientRequestHTTPHost
+        clientRequestPath
+        clientRequestQuery
+        datetime
+        rayName
+        ruleId
+        source
+        userAgent
+      }
+    }
+  }
+}`
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	payload := map[string]any{
+		"query": query,
+		"variables": map[string]string{
+			"zoneTag": zoneID,
+			"rayName": rayID,
+			"since":   since.Format(time.RFC3339),
+			"until":   until.Format(time.RFC3339),
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling query: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, graphqlEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
 
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	resp, err := httpClient.Do(req)
@@ -206,61 +263,52 @@ func fetchRayID(ctx context.Context, token, zoneID, rayID string) ([]LogEntry, e
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		// Try to extract a useful error message from the response.
-		var errResp struct {
-			Errors []struct {
-				Message string `json:"message"`
-				Code    int    `json:"code"`
-			} `json:"errors"`
-		}
-		if json.Unmarshal(body, &errResp) == nil && len(errResp.Errors) > 0 {
-			msgs := make([]string, 0, len(errResp.Errors))
-			for _, e := range errResp.Errors {
-				msgs = append(msgs, e.Message)
-			}
-			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.Join(msgs, "; "))
-		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	return parseNDJSON(body)
-}
+	var gqlResp struct {
+		Data struct {
+			Viewer struct {
+				Zones []struct {
+					FirewallEventsAdaptive []FirewallEvent `json:"firewallEventsAdaptive"`
+				} `json:"zones"`
+			} `json:"viewer"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
 
-// parseNDJSON parses a response that may be an array, single object, or NDJSON lines.
-func parseNDJSON(b []byte) ([]LogEntry, error) {
-	trimmed := strings.TrimSpace(string(b))
-	if trimmed == "" || trimmed == "null" {
+	if err := json.Unmarshal(respBody, &gqlResp); err != nil {
+		return nil, fmt.Errorf("parsing response: %w", err)
+	}
+
+	if len(gqlResp.Errors) > 0 {
+		msgs := make([]string, 0, len(gqlResp.Errors))
+		for _, e := range gqlResp.Errors {
+			msgs = append(msgs, e.Message)
+		}
+		return nil, fmt.Errorf("%s", strings.Join(msgs, "; "))
+	}
+
+	if len(gqlResp.Data.Viewer.Zones) == 0 {
 		return nil, nil
 	}
 
-	// JSON array.
-	if strings.HasPrefix(trimmed, "[") {
-		var entries []LogEntry
-		if err := json.Unmarshal(b, &entries); err != nil {
-			return nil, fmt.Errorf("parsing array response: %w", err)
-		}
-		return entries, nil
-	}
-
-	// Single object or NDJSON (one object per line).
-	var entries []LogEntry
-	for _, line := range strings.Split(trimmed, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var e LogEntry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			return nil, fmt.Errorf("parsing log line: %w", err)
-		}
-		entries = append(entries, e)
-	}
-	return entries, nil
+	return gqlResp.Data.Viewer.Zones[0].FirewallEventsAdaptive, nil
 }
 
+// parseDuration parses a human duration string like "1h", "24h", "48h".
+func parseDuration(s string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q (use e.g. 1h, 6h, 24h)", s)
+	}
+	return d, nil
+}
