@@ -37,7 +37,9 @@ Output modes:
   Default  Beautiful tables and colored output for human operators.
   --json   Structured JSON to stdout — ideal for AI assistants and scripts.
   --toon   Token-Oriented Object Notation — 30-60% fewer tokens than JSON, ideal for LLMs.
-  --query  JMESPath filter on --json/--toon output (e.g. --query '[].id').
+  --query  JMESPath filter on --json/--toon output.
+           Examples: --query '[].id'  --query 'events[*].action'
+                     --query 'events[*].{ray: ray_id, action: action}'
   --quiet  Suppress progress/info lines; emit only the result.`,
 	SilenceUsage: true,
 }

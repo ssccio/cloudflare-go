@@ -64,7 +64,9 @@ Either --zone or --domain is required.
 Examples:
   cf rayid lookup 7f9b3c1a4e5d6f8a --domain example.com
   cf rayid lookup 7f9b3c1a4e5d6f8a --zone ZONE_ID --since 2h
-  cf rayid lookup 7f9b3c1a4e5d6f8a --zone ZONE_ID --since 24h --json`,
+  cf rayid lookup 7f9b3c1a4e5d6f8a --zone ZONE_ID --since 24h --json
+  cf rayid lookup 7f9b3c1a4e5d6f8a --domain example.com --json --query 'events[*].action'
+  cf rayid lookup 7f9b3c1a4e5d6f8a --domain example.com --toon --query 'events[*].{ray: ray_id, action: action}'`,
 	Args: cobra.ExactArgs(1),
 	RunE: runLookup,
 }

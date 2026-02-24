@@ -26,7 +26,9 @@ var listCmd = &cobra.Command{
 
 Examples:
   cf zones list
-  cf zones list --json`,
+  cf zones list --json
+  cf zones list --json --query '[].id'
+  cf zones list --toon --query '[].{name: name, id: id}'`,
 	RunE: runList,
 }
 

@@ -30,7 +30,9 @@ Examples:
   cf dns list --zone ZONE_ID
   cf dns list --zone ZONE_ID --type A
   cf dns list --zone ZONE_ID --name example.com
-  cf dns list --zone ZONE_ID --json`,
+  cf dns list --zone ZONE_ID --json
+  cf dns list --zone ZONE_ID --json --query '[].{name: name, type: type, content: content}'
+  cf dns list --domain example.com --toon --query "[?type=='A'].name"`,
 	RunE: runList,
 }
 
