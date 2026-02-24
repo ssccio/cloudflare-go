@@ -16,6 +16,7 @@ import (
 
 var (
 	createZone    string
+	createDomain  string
 	createName    string
 	createType    string
 	createContent string
@@ -54,7 +55,8 @@ Examples:
 }
 
 func init() {
-	createCmd.Flags().StringVar(&createZone, "zone", "", "Zone ID (required)")
+	createCmd.Flags().StringVar(&createZone, "zone", "", "Zone ID")
+	createCmd.Flags().StringVar(&createDomain, "domain", "", "Domain name (resolved to zone ID automatically)")
 	createCmd.Flags().StringVar(&createName, "name", "", "DNS record name (required)")
 	createCmd.Flags().StringVar(&createType, "type", "", "Record type: A, AAAA, CNAME, MX, TXT, NS (required)")
 	createCmd.Flags().StringVar(&createContent, "content", "", "Record content/value (required)")
@@ -62,7 +64,7 @@ func init() {
 	createCmd.Flags().BoolVar(&createProxied, "proxied", false, "Enable Cloudflare proxy (orange cloud)")
 	createCmd.Flags().StringVar(&createComment, "comment", "", "Optional comment for the record")
 
-	_ = createCmd.MarkFlagRequired("zone")
+	createCmd.MarkFlagsMutuallyExclusive("zone", "domain")
 	_ = createCmd.MarkFlagRequired("name")
 	_ = createCmd.MarkFlagRequired("type")
 	_ = createCmd.MarkFlagRequired("content")
@@ -76,13 +78,25 @@ func runCreate(cmd *cobra.Command, _ []string) error {
 
 	p := output.New(jsonFlag, quiet, noColor)
 
+	if createZone == "" && createDomain == "" {
+		err := fmt.Errorf("one of --zone or --domain is required")
+		p.Error("%v", err)
+		return err
+	}
+
 	cfClient, err := client.New(client.Config{Token: token})
 	if err != nil {
 		p.Error("%v", err)
 		return err
 	}
 
-	p.Info("Creating %s record for %s in zone %s…", strings.ToUpper(createType), createName, createZone)
+	zoneID, err := client.ResolveZoneID(cmd.Context(), cfClient, createZone, createDomain)
+	if err != nil {
+		p.Error("%v", err)
+		return err
+	}
+
+	p.Info("Creating %s record for %s in zone %s…", strings.ToUpper(createType), createName, zoneID)
 
 	recordType := strings.ToUpper(createType)
 	ttl := dns.TTL(createTTL)
@@ -96,7 +110,7 @@ func runCreate(cmd *cobra.Command, _ []string) error {
 	resp, apiErr := cfClient.DNS.Records.New(
 		context.Background(),
 		dns.RecordNewParams{
-			ZoneID: cf.F(createZone),
+			ZoneID: cf.F(zoneID),
 			Body:   body,
 		},
 	)

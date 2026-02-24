@@ -16,6 +16,7 @@ import (
 
 var (
 	listZone       string
+	listDomain     string
 	listFilterType string
 	listFilterName string
 )
@@ -34,11 +35,12 @@ Examples:
 }
 
 func init() {
-	listCmd.Flags().StringVar(&listZone, "zone", "", "Zone ID (required)")
+	listCmd.Flags().StringVar(&listZone, "zone", "", "Zone ID")
+	listCmd.Flags().StringVar(&listDomain, "domain", "", "Domain name (resolved to zone ID automatically)")
 	listCmd.Flags().StringVar(&listFilterType, "type", "", "Filter by record type (A, AAAA, CNAME, MX, TXT, NS)")
 	listCmd.Flags().StringVar(&listFilterName, "name", "", "Filter by record name")
 
-	_ = listCmd.MarkFlagRequired("zone")
+	listCmd.MarkFlagsMutuallyExclusive("zone", "domain")
 }
 
 func runList(cmd *cobra.Command, _ []string) error {
@@ -49,16 +51,28 @@ func runList(cmd *cobra.Command, _ []string) error {
 
 	p := output.New(jsonFlag, quiet, noColor)
 
+	if listZone == "" && listDomain == "" {
+		err := fmt.Errorf("one of --zone or --domain is required")
+		p.Error("%v", err)
+		return err
+	}
+
 	cfClient, err := client.New(client.Config{Token: token})
 	if err != nil {
 		p.Error("%v", err)
 		return err
 	}
 
-	p.Info("Fetching DNS records for zone %s…", listZone)
+	zoneID, err := client.ResolveZoneID(cmd.Context(), cfClient, listZone, listDomain)
+	if err != nil {
+		p.Error("%v", err)
+		return err
+	}
+
+	p.Info("Fetching DNS records for zone %s…", zoneID)
 
 	params := dns.RecordListParams{
-		ZoneID: cf.F(listZone),
+		ZoneID: cf.F(zoneID),
 	}
 	if listFilterType != "" {
 		params.Type = cf.F(dns.RecordListParamsType(strings.ToUpper(listFilterType)))

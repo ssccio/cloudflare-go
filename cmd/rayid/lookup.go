@@ -13,35 +13,36 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ssccio/cloudflare-go/internal/client"
 	"github.com/ssccio/cloudflare-go/internal/output"
 )
 
 var (
-	lookupZone string
+	lookupZone   string
+	lookupDomain string
 )
 
 // FirewallEvent represents a single firewall event returned by the GraphQL API.
+// Field names match the Cloudflare GraphQL Analytics schema exactly.
 type FirewallEvent struct {
-	Action                       string    `json:"action"`
-	ClientASN                    int       `json:"clientASN"`
-	ClientCountryName            string    `json:"clientCountryName"`
-	ClientIP                     string    `json:"clientIP"`
-	ClientRequestHTTPHost        string    `json:"clientRequestHTTPHost"`
-	ClientRequestHTTPMethodName  string    `json:"clientRequestHTTPMethodName"`
-	ClientRequestHTTPProtocol    string    `json:"clientRequestHTTPProtocol"`
-	ClientRequestPath            string    `json:"clientRequestPath"`
-	ClientRequestQuery           string    `json:"clientRequestQuery"`
-	Datetime                     time.Time `json:"datetime"`
-	RayName                      string    `json:"rayName"`
-	RuleID                       string    `json:"ruleId"`
-	Source                       string    `json:"source"`
-	UserAgent                    string    `json:"userAgent"`
+	Action             string    `json:"action"`
+	ClientAsn          string    `json:"clientAsn"`
+	ClientCountryName  string    `json:"clientCountryName"`
+	ClientIP           string    `json:"clientIP"`
+	ClientRequestHost  string    `json:"clientRequestHTTPHost"`
+	ClientRequestPath  string    `json:"clientRequestPath"`
+	ClientRequestQuery string    `json:"clientRequestQuery"`
+	Datetime           time.Time `json:"datetime"`
+	RayName            string    `json:"rayName"`
+	RuleID             string    `json:"ruleId"`
+	Source             string    `json:"source"`
+	UserAgent          string    `json:"userAgent"`
 }
 
 // RayIDResult is the top-level result for --json output.
 type RayIDResult struct {
-	RayID  string         `json:"ray_id"`
-	Zone   string         `json:"zone_id"`
+	RayID  string          `json:"ray_id"`
+	Zone   string          `json:"zone_id"`
 	Events []FirewallEvent `json:"events"`
 }
 
@@ -56,18 +57,20 @@ proxied through Cloudflare. It can also be found in Cloudflare
 security event logs and the Firewall Analytics dashboard.
 
 This command queries the Cloudflare GraphQL Analytics API.
-A zone ID is required to scope the query.
+Either --zone or --domain is required to scope the query.
 
 Examples:
   cf rayid lookup 7f9b3c1a4e5d6f8a --zone ZONE_ID
-  cf rayid lookup 7f9b3c1a4e5d6f8a --zone ZONE_ID --json`,
+  cf rayid lookup 7f9b3c1a4e5d6f8a --domain example.com
+  cf rayid lookup 7f9b3c1a4e5d6f8a --domain example.com --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runLookup,
 }
 
 func init() {
-	lookupCmd.Flags().StringVar(&lookupZone, "zone", "", "Zone ID to scope the search (required)")
-	_ = lookupCmd.MarkFlagRequired("zone")
+	lookupCmd.Flags().StringVar(&lookupZone, "zone", "", "Zone ID to scope the search")
+	lookupCmd.Flags().StringVar(&lookupDomain, "domain", "", "Domain name (resolved to zone ID automatically)")
+	lookupCmd.MarkFlagsMutuallyExclusive("zone", "domain")
 }
 
 const graphqlEndpoint = "https://api.cloudflare.com/client/v4/graphql"
@@ -92,9 +95,30 @@ func runLookup(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	p.Info("Looking up Ray ID %s in zone %s…", rayID, lookupZone)
+	if lookupZone == "" && lookupDomain == "" {
+		err := fmt.Errorf("one of --zone or --domain is required")
+		p.Error("%v", err)
+		return err
+	}
 
-	events, err := queryFirewallEvents(cmd.Context(), token, lookupZone, rayID)
+	zoneID := lookupZone
+	if lookupDomain != "" {
+		cfClient, err := client.New(client.Config{Token: token})
+		if err != nil {
+			p.Error("%v", err)
+			return err
+		}
+		p.Info("Resolving zone ID for %s…", lookupDomain)
+		zoneID, err = client.ResolveZoneID(cmd.Context(), cfClient, "", lookupDomain)
+		if err != nil {
+			p.Error("%v", err)
+			return err
+		}
+	}
+
+	p.Info("Looking up Ray ID %s in zone %s…", rayID, zoneID)
+
+	events, err := queryFirewallEvents(cmd.Context(), token, zoneID, rayID)
 	if err != nil {
 		p.Error("GraphQL query failed: %v", err)
 		return err
@@ -102,7 +126,7 @@ func runLookup(cmd *cobra.Command, args []string) error {
 
 	result := RayIDResult{
 		RayID:  rayID,
-		Zone:   lookupZone,
+		Zone:   zoneID,
 		Events: events,
 	}
 
@@ -112,7 +136,7 @@ func runLookup(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(events) == 0 {
-		p.Info("No firewall events found for Ray ID %s in zone %s.", rayID, lookupZone)
+		p.Info("No firewall events found for Ray ID %s.", rayID)
 		p.Info("The Ray ID may be from a non-firewall request, or outside the retention window.")
 		return nil
 	}
@@ -121,7 +145,7 @@ func runLookup(cmd *cobra.Command, args []string) error {
 		if len(events) > 1 {
 			fmt.Fprintf(cmd.OutOrStdout(), "\nEvent %d of %d\n", i+1, len(events))
 		}
-		url := ev.ClientRequestHTTPHost + ev.ClientRequestPath
+		url := ev.ClientRequestHost + ev.ClientRequestPath
 		if ev.ClientRequestQuery != "" {
 			url += "?" + ev.ClientRequestQuery
 		}
@@ -133,10 +157,8 @@ func runLookup(cmd *cobra.Command, args []string) error {
 			{"Rule ID", ev.RuleID},
 			{"Client IP", ev.ClientIP},
 			{"Country", ev.ClientCountryName},
-			{"ASN", fmt.Sprintf("%d", ev.ClientASN)},
-			{"Method", ev.ClientRequestHTTPMethodName},
-			{"Protocol", ev.ClientRequestHTTPProtocol},
-			{"Host", ev.ClientRequestHTTPHost},
+			{"ASN", ev.ClientAsn},
+			{"Host", ev.ClientRequestHost},
 			{"Path", ev.ClientRequestPath},
 			{"Query", ev.ClientRequestQuery},
 			{"User Agent", ev.UserAgent},
@@ -160,12 +182,10 @@ query FirewallEventsByRayID($zoneTag: string!, $rayName: string!) {
         orderBy: [datetime_DESC]
       ) {
         action
-        clientASN
+        clientAsn
         clientCountryName
         clientIP
         clientRequestHTTPHost
-        clientRequestHTTPMethodName
-        clientRequestHTTPProtocol
         clientRequestPath
         clientRequestQuery
         datetime
