@@ -57,13 +57,27 @@ type FirewallEvent struct {
 	UserAgent string    `json:"ua"       toon:"ua"`
 }
 
+// HTTPRequest holds the result of an httpRequestsAdaptive lookup (non-WAF requests).
+type HTTPRequest struct {
+	Datetime     time.Time `json:"datetime"      toon:"datetime"`
+	RayID        string    `json:"ray_id"        toon:"ray_id"`
+	IP           string    `json:"ip"            toon:"ip"`
+	Host         string    `json:"host"          toon:"host"`
+	Path         string    `json:"path"          toon:"path"`
+	EdgeStatus   int       `json:"edge_status"   toon:"edge_status"`
+	OriginStatus int       `json:"origin_status" toon:"origin_status"`
+	CacheStatus  string    `json:"cache_status"  toon:"cache_status"`
+	UserAgent    string    `json:"ua"            toon:"ua"`
+}
+
 // RayIDResult is the top-level result for --json / --toon output.
 type RayIDResult struct {
-	RayID  string          `json:"ray_id"  toon:"ray_id"`
-	ZoneID string          `json:"zone_id" toon:"zone_id"`
-	Since  string          `json:"since"   toon:"since"`
-	Until  string          `json:"until"   toon:"until"`
-	Events []FirewallEvent `json:"events"  toon:"events"`
+	RayID        string          `json:"ray_id"         toon:"ray_id"`
+	ZoneID       string          `json:"zone_id"        toon:"zone_id"`
+	Since        string          `json:"since"          toon:"since"`
+	Until        string          `json:"until"          toon:"until"`
+	Events       []FirewallEvent `json:"events"         toon:"events"`
+	HTTPRequests []HTTPRequest   `json:"http_requests"  toon:"http_requests"`
 }
 
 const graphqlEndpoint = "https://api.cloudflare.com/client/v4/graphql"
@@ -91,7 +105,7 @@ Examples:
 func init() {
 	lookupCmd.Flags().StringVar(&lookupZone, "zone", "", "Zone ID to scope the search")
 	lookupCmd.Flags().StringVar(&lookupDomain, "domain", "", "Domain name (resolved to zone ID automatically)")
-	lookupCmd.Flags().StringVar(&lookupSince, "since", "24h", "How far back to search (e.g. 1h, 6h, 24h, 48h)")
+	lookupCmd.Flags().StringVar(&lookupSince, "since", "1h", "How far back to search (e.g. 1h, 6h, 24h, 48h)")
 	lookupCmd.Flags().StringVar(&lookupUntil, "until", "", "End of search window (RFC3339 or relative like 1h); defaults to now")
 	lookupCmd.MarkFlagsMutuallyExclusive("zone", "domain")
 }
@@ -171,12 +185,22 @@ func runLookup(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Fall back to HTTP request logs if no WAF event found.
+	var httpReqs []HTTPRequest
+	if len(events) == 0 {
+		httpReqs, err = queryHTTPRequest(cmd.Context(), token, zoneID, rayID, since, until)
+		if err != nil {
+			p.Info("HTTP request lookup failed: %v", err)
+		}
+	}
+
 	result := RayIDResult{
-		RayID:  rayID,
-		ZoneID: zoneID,
-		Since:  since.Format(time.RFC3339),
-		Until:  until.Format(time.RFC3339),
-		Events: events,
+		RayID:        rayID,
+		ZoneID:       zoneID,
+		Since:        since.Format(time.RFC3339),
+		Until:        until.Format(time.RFC3339),
+		Events:       events,
+		HTTPRequests: httpReqs,
 	}
 
 	if p.JSON || p.TOON {
@@ -184,15 +208,15 @@ func runLookup(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if len(events) == 0 {
-		p.Info("No firewall events found for Ray ID %s in the %s window.", rayID, lookupSince)
-		p.Info("Try a wider window with --since 48h or --since 72h.")
+	if len(events) == 0 && len(httpReqs) == 0 {
+		p.Info("No events found for Ray ID %s in the %s window.", rayID, lookupSince)
+		p.Info("Try a wider window with --since 6h or --since 24h.")
 		return nil
 	}
 
 	for i, ev := range events {
 		if len(events) > 1 {
-			fmt.Fprintf(cmd.OutOrStdout(), "\nEvent %d of %d\n", i+1, len(events))
+			fmt.Fprintf(cmd.OutOrStdout(), "\nFirewall Event %d of %d\n", i+1, len(events))
 		}
 		url := ev.Host + ev.Path
 		if ev.Query != "" {
@@ -214,84 +238,48 @@ func runLookup(cmd *cobra.Command, args []string) error {
 			{"URL", url},
 		})
 	}
+
+	for i, r := range httpReqs {
+		if len(httpReqs) > 1 {
+			fmt.Fprintf(cmd.OutOrStdout(), "\nHTTP Request %d of %d\n", i+1, len(httpReqs))
+		}
+		url := r.Host + r.Path
+		p.KV([][2]string{
+			{"Ray ID", r.RayID},
+			{"Datetime", r.Datetime.Format(time.RFC3339)},
+			{"Edge Status", fmt.Sprintf("%d", r.EdgeStatus)},
+			{"Origin Status", fmt.Sprintf("%d", r.OriginStatus)},
+			{"Cache", r.CacheStatus},
+			{"Client IP", r.IP},
+			{"Host", r.Host},
+			{"Path", r.Path},
+			{"User Agent", r.UserAgent},
+			{"URL", url},
+		})
+	}
+
 	return nil
 }
 
 // queryFirewallEvents queries the Cloudflare GraphQL Security Analytics API.
-// A time window is required to reduce quota usage and avoid rate limits.
 // Variables are parameterized to prevent GraphQL injection.
 func queryFirewallEvents(ctx context.Context, token, zoneID, rayID string, since, until time.Time) ([]FirewallEvent, error) {
-	const query = `
-query FirewallEventsByRayID(
-  $zoneTag: string!
-  $rayName: string!
-  $since: Time!
-  $until: Time!
-) {
+	const gql = `
+query FirewallEventsByRayID($zoneTag: string! $rayName: string! $since: Time! $until: Time!) {
   viewer {
     zones(filter: {zoneTag: $zoneTag}) {
       firewallEventsAdaptive(
-        filter: {
-          rayName: $rayName
-          datetime_geq: $since
-          datetime_leq: $until
-        }
-        limit: 10
+        filter: {rayName: $rayName datetime_geq: $since datetime_leq: $until}
+        limit: 1
         orderBy: [datetime_DESC]
       ) {
-        action
-        clientAsn
-        clientCountryName
-        clientIP
-        clientRequestHTTPHost
-        clientRequestPath
-        clientRequestQuery
-        datetime
-        rayName
-        ruleId
-        source
-        userAgent
+        action clientAsn clientCountryName clientIP
+        clientRequestHTTPHost clientRequestPath clientRequestQuery
+        datetime rayName ruleId source userAgent
       }
     }
   }
 }`
-
-	payload := map[string]any{
-		"query": query,
-		"variables": map[string]string{
-			"zoneTag": zoneID,
-			"rayName": rayID,
-			"since":   since.Format(time.RFC3339),
-			"until":   until.Format(time.RFC3339),
-		},
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshalling query: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, graphqlEndpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("building request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
-	}
 
 	var gqlResp struct {
 		Data struct {
@@ -301,19 +289,22 @@ query FirewallEventsByRayID(
 				} `json:"zones"`
 			} `json:"viewer"`
 		} `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
+		Errors []struct{ Message string `json:"message"` } `json:"errors"`
 	}
 
-	if err := json.Unmarshal(respBody, &gqlResp); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
+	if err := doGraphQL(ctx, token, gql, map[string]string{
+		"zoneTag": zoneID,
+		"rayName": rayID,
+		"since":   since.Format(time.RFC3339),
+		"until":   until.Format(time.RFC3339),
+	}, &gqlResp); err != nil {
+		return nil, err
 	}
 
 	if len(gqlResp.Errors) > 0 {
-		msgs := make([]string, 0, len(gqlResp.Errors))
-		for _, e := range gqlResp.Errors {
-			msgs = append(msgs, e.Message)
+		msgs := make([]string, len(gqlResp.Errors))
+		for i, e := range gqlResp.Errors {
+			msgs[i] = e.Message
 		}
 		return nil, fmt.Errorf("%s", strings.Join(msgs, "; "))
 	}
@@ -341,6 +332,116 @@ query FirewallEventsByRayID(
 		}
 	}
 	return events, nil
+}
+
+// queryHTTPRequest falls back to httpRequestsAdaptive for non-WAF Ray IDs (e.g. 5xx origin errors).
+func queryHTTPRequest(ctx context.Context, token, zoneID, rayID string, since, until time.Time) ([]HTTPRequest, error) {
+	const gql = `
+query HTTPRequestByRayID($zoneTag: string! $rayName: string! $since: Time! $until: Time!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneTag}) {
+      httpRequestsAdaptive(
+        filter: {rayName: $rayName datetime_geq: $since datetime_leq: $until}
+        limit: 1
+        orderBy: [datetime_DESC]
+      ) {
+        datetime rayName clientIP
+        clientRequestHTTPHost clientRequestPath
+        edgeResponseStatus originResponseStatus
+        cacheStatus clientRequestUserAgent
+      }
+    }
+  }
+}`
+
+	var gqlResp struct {
+		Data struct {
+			Viewer struct {
+				Zones []struct {
+					HTTPRequestsAdaptive []struct {
+						Datetime             time.Time `json:"datetime"`
+						RayName              string    `json:"rayName"`
+						ClientIP             string    `json:"clientIP"`
+						ClientRequestHost    string    `json:"clientRequestHTTPHost"`
+						ClientRequestPath    string    `json:"clientRequestPath"`
+						EdgeResponseStatus   int       `json:"edgeResponseStatus"`
+						OriginResponseStatus int       `json:"originResponseStatus"`
+						CacheStatus          string    `json:"cacheStatus"`
+						UserAgent            string    `json:"clientRequestUserAgent"`
+					} `json:"httpRequestsAdaptive"`
+				} `json:"zones"`
+			} `json:"viewer"`
+		} `json:"data"`
+		Errors []struct{ Message string `json:"message"` } `json:"errors"`
+	}
+
+	if err := doGraphQL(ctx, token, gql, map[string]string{
+		"zoneTag": zoneID,
+		"rayName": rayID,
+		"since":   since.Format(time.RFC3339),
+		"until":   until.Format(time.RFC3339),
+	}, &gqlResp); err != nil {
+		return nil, err
+	}
+
+	if len(gqlResp.Errors) > 0 {
+		msgs := make([]string, len(gqlResp.Errors))
+		for i, e := range gqlResp.Errors {
+			msgs[i] = e.Message
+		}
+		return nil, fmt.Errorf("%s", strings.Join(msgs, "; "))
+	}
+
+	if len(gqlResp.Data.Viewer.Zones) == 0 {
+		return nil, nil
+	}
+
+	raw := gqlResp.Data.Viewer.Zones[0].HTTPRequestsAdaptive
+	reqs := make([]HTTPRequest, len(raw))
+	for i, r := range raw {
+		reqs[i] = HTTPRequest{
+			Datetime:     r.Datetime,
+			RayID:        r.RayName,
+			IP:           r.ClientIP,
+			Host:         r.ClientRequestHost,
+			Path:         r.ClientRequestPath,
+			EdgeStatus:   r.EdgeResponseStatus,
+			OriginStatus: r.OriginResponseStatus,
+			CacheStatus:  r.CacheStatus,
+			UserAgent:    r.UserAgent,
+		}
+	}
+	return reqs, nil
+}
+
+// doGraphQL executes a parameterized GraphQL query against the Cloudflare API.
+func doGraphQL(ctx context.Context, token, query string, variables map[string]string, out any) error {
+	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
+	if err != nil {
+		return fmt.Errorf("marshalling query: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, graphqlEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	return json.Unmarshal(respBody, out)
 }
 
 // parseDuration parses a human duration string like "1h", "24h", "48h".
