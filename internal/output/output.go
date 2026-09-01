@@ -137,6 +137,13 @@ func (p *Printer) Success(format string, args ...any) {
 	fmt.Fprintf(p.ErrOut, okStyle.Render("✓ ")+msg+"\n")
 }
 
+// Notice always prints to stderr, even in quiet or machine mode. Use it for
+// things the operator must see regardless of output mode, such as dry-run
+// previews where no API call was made.
+func (p *Printer) Notice(format string, args ...any) {
+	fmt.Fprintf(p.ErrOut, dimStyle.Render(fmt.Sprintf(format, args...))+"\n")
+}
+
 // Error always prints to stderr with an error prefix.
 func (p *Printer) Error(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
