@@ -15,6 +15,7 @@ import (
 
 	"github.com/ssccio/cloudflare-go/internal/client"
 	"github.com/ssccio/cloudflare-go/internal/output"
+	"github.com/ssccio/cloudflare-go/internal/ruleinfo"
 )
 
 var (
@@ -36,6 +37,7 @@ type firewallEventRaw struct {
 	Datetime           time.Time `json:"datetime"`
 	RayName            string    `json:"rayName"`
 	RuleID             string    `json:"ruleId"`
+	RulesetID          string    `json:"rulesetId"`
 	Source             string    `json:"source"`
 	UserAgent          string    `json:"userAgent"`
 }
@@ -53,8 +55,14 @@ type FirewallEvent struct {
 	Datetime  time.Time `json:"datetime" toon:"datetime"`
 	RayID     string    `json:"ray_id"   toon:"ray_id"`
 	RuleID    string    `json:"rule_id"  toon:"rule_id"`
+	RulesetID string    `json:"ruleset_id" toon:"ruleset_id"`
 	Source    string    `json:"source"   toon:"source"`
 	UserAgent string    `json:"ua"       toon:"ua"`
+
+	// Resolved from the ruleset API; empty when the rule could not be looked up.
+	RuleDescription string   `json:"rule_description,omitempty" toon:"rule_description,omitempty"`
+	RuleCategories  []string `json:"rule_categories,omitempty"  toon:"rule_categories,omitempty"`
+	RulesetName     string   `json:"ruleset_name,omitempty"     toon:"ruleset_name,omitempty"`
 }
 
 // HTTPRequest holds the result of an httpRequestsAdaptive lookup (non-WAF requests).
@@ -185,6 +193,28 @@ func runLookup(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Turn rulesetId/ruleId into the rule's actual name.
+	if len(events) > 0 {
+		cfClient, cerr := client.New(client.Config{Token: token})
+		if cerr != nil {
+			p.Info("Skipping rule name lookup: %v", cerr)
+		} else {
+			resolver := ruleinfo.NewResolver(cfClient, zoneID)
+			for i := range events {
+				info, found, rerr := resolver.Lookup(cmd.Context(), events[i].RulesetID, events[i].RuleID)
+				if rerr != nil {
+					p.Info("Could not resolve rule %s: %v", events[i].RuleID, rerr)
+					continue
+				}
+				if found {
+					events[i].RuleDescription = info.RuleDescription
+					events[i].RuleCategories = info.RuleCategories
+					events[i].RulesetName = info.RulesetName
+				}
+			}
+		}
+	}
+
 	// Fall back to HTTP request logs if no WAF event found.
 	var httpReqs []HTTPRequest
 	if len(events) == 0 {
@@ -227,6 +257,7 @@ func runLookup(cmd *cobra.Command, args []string) error {
 			{"Datetime", ev.Datetime.Format(time.RFC3339)},
 			{"Action", strings.ToUpper(ev.Action)},
 			{"Source", ev.Source},
+			{"Rule", ruleLabel(ev)},
 			{"Rule ID", ev.RuleID},
 			{"Client IP", ev.IP},
 			{"Country", ev.Country},
@@ -275,7 +306,7 @@ query FirewallEventsByRayID($zoneTag: string! $rayName: string! $since: Time! $u
       ) {
         action clientAsn clientCountryName clientIP
         clientRequestHTTPHost clientRequestPath clientRequestQuery
-        datetime rayName ruleId source userAgent
+        datetime rayName ruleId rulesetId source userAgent
       }
     }
   }
@@ -289,7 +320,9 @@ query FirewallEventsByRayID($zoneTag: string! $rayName: string! $since: Time! $u
 				} `json:"zones"`
 			} `json:"viewer"`
 		} `json:"data"`
-		Errors []struct{ Message string `json:"message"` } `json:"errors"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
 	}
 
 	if err := doGraphQL(ctx, token, gql, map[string]string{
@@ -327,6 +360,7 @@ query FirewallEventsByRayID($zoneTag: string! $rayName: string! $since: Time! $u
 			Datetime:  r.Datetime,
 			RayID:     r.RayName,
 			RuleID:    r.RuleID,
+			RulesetID: r.RulesetID,
 			Source:    r.Source,
 			UserAgent: r.UserAgent,
 		}
@@ -372,7 +406,9 @@ query HTTPRequestByRayID($zoneTag: string! $rayName: string! $since: Time! $unti
 				} `json:"zones"`
 			} `json:"viewer"`
 		} `json:"data"`
-		Errors []struct{ Message string `json:"message"` } `json:"errors"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
 	}
 
 	if err := doGraphQL(ctx, token, gql, map[string]string{
@@ -451,4 +487,15 @@ func parseDuration(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid duration %q (use e.g. 1h, 6h, 24h)", s)
 	}
 	return d, nil
+}
+
+// ruleLabel renders the resolved rule name, with categories when present.
+func ruleLabel(ev FirewallEvent) string {
+	if ev.RuleDescription == "" {
+		return "(unresolved)"
+	}
+	if len(ev.RuleCategories) == 0 {
+		return ev.RuleDescription
+	}
+	return fmt.Sprintf("%s [%s]", ev.RuleDescription, strings.Join(ev.RuleCategories, ", "))
 }
