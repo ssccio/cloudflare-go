@@ -146,7 +146,15 @@ func runUpdateRule(cmd *cobra.Command, _ []string) error {
 		body["expression"] = updateRuleExpression
 		changes = append(changes, fmt.Sprintf("expression: %s → %s", previous.Expression, updateRuleExpression))
 	}
-	if flags.Changed("action") {
+	if flags.Changed("action") && action != previous.Action {
+		// Skip rules carry action parameters naming what to skip; they can't be
+		// carried across to another action or invented from nothing.
+		if action == "skip" || previous.Action == "skip" {
+			err := fmt.Errorf("cannot change action between %s and %s in place; create a new rule and delete this one", previous.Action, action)
+			p.Error("%v", err)
+			return err
+		}
+		delete(body, "action_parameters")
 		body["action"] = action
 		changes = append(changes, fmt.Sprintf("action: %s → %s", previous.Action, action))
 	}
