@@ -8,6 +8,7 @@ import (
 
 	"github.com/ssccio/cloudflare-go/cmd/analytics"
 	"github.com/ssccio/cloudflare-go/cmd/bulk"
+	"github.com/ssccio/cloudflare-go/cmd/cache"
 	"github.com/ssccio/cloudflare-go/cmd/customhostnames"
 	"github.com/ssccio/cloudflare-go/cmd/dns"
 	"github.com/ssccio/cloudflare-go/cmd/health"
@@ -34,7 +35,8 @@ var rootCmd = &cobra.Command{
 	Use:   "cf",
 	Short: "cf — Cloudflare CLI",
 	Long: `cf is a Cloudflare command-line tool for DNS, custom hostnames,
-WAF rules, SSL, analytics, health checks, and Ray ID investigation.
+WAF rules, SSL, cache purges, analytics, health checks, and Ray ID
+investigation.
 
 Authentication:
   Set CLOUDFLARE_API_TOKEN in your environment, or pass --token.
@@ -73,6 +75,7 @@ func init() {
 
 	rootCmd.AddCommand(analytics.Cmd)
 	rootCmd.AddCommand(bulk.Cmd)
+	rootCmd.AddCommand(cache.Cmd)
 	rootCmd.AddCommand(customhostnames.Cmd)
 	rootCmd.AddCommand(dns.Cmd)
 	rootCmd.AddCommand(health.Cmd)
