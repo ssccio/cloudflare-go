@@ -1,7 +1,9 @@
 package waf
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -18,6 +20,7 @@ var (
 	createRuleZone        string
 	createRuleDomain      string
 	createRuleRulesetID   string
+	createRulePhase       string
 	createRuleExpression  string
 	createRuleAction      string
 	createRuleDescription string
@@ -45,6 +48,7 @@ var validActions = map[string]rulesets.RuleNewParamsBodyAction{
 
 // createRuleResult is the serialisable result of a rule creation.
 type createRuleResult struct {
+	RulesetCreated bool       `json:"ruleset_created"   toon:"ruleset_created"`
 	RulesetID      string     `json:"ruleset_id"        toon:"ruleset_id"`
 	RulesetName    string     `json:"ruleset_name"      toon:"ruleset_name"`
 	RulesetVersion string     `json:"ruleset_version"   toon:"ruleset_version"`
@@ -66,6 +70,11 @@ Rate-limit rules (http_ratelimit phase) take --rl-period and --rl-requests;
 --rl-characteristics defaults to ip.src and always includes cf.colo.id, which
 Cloudflare requires. --rl-counting-expression counts a different set of requests
 than the ones the rule acts on.
+
+Instead of --ruleset-id, --phase names the zone entrypoint ruleset for that
+phase (e.g. http_ratelimit, http_request_firewall_custom). If the zone has no
+entrypoint for the phase yet, an empty one is created first and the rule is
+added to it. "cf waf delete-ruleset" removes it again once it is empty.
 
 Use --before with an existing rule ID to insert ahead of that rule, which is how
 a skip rule is placed in front of the execute rules it needs to pre-empt.
@@ -89,7 +98,8 @@ Examples:
 func init() {
 	createRuleCmd.Flags().StringVar(&createRuleZone, "zone", "", "Zone ID")
 	createRuleCmd.Flags().StringVar(&createRuleDomain, "domain", "", "Domain name (resolved to zone ID automatically)")
-	createRuleCmd.Flags().StringVar(&createRuleRulesetID, "ruleset-id", "", "Ruleset ID to add the rule to (required)")
+	createRuleCmd.Flags().StringVar(&createRuleRulesetID, "ruleset-id", "", "Ruleset ID to add the rule to (this or --phase is required)")
+	createRuleCmd.Flags().StringVar(&createRulePhase, "phase", "", "Zone entrypoint phase to add the rule to; created if missing")
 	createRuleCmd.Flags().StringVar(&createRuleExpression, "expression", "", "Match expression in Cloudflare filter syntax (required)")
 	createRuleCmd.Flags().StringVar(&createRuleAction, "action", "", "Action: "+actionList()+" (required)")
 	createRuleCmd.Flags().StringVar(&createRuleDescription, "description", "", "Human-readable rule description (required)")
@@ -105,7 +115,8 @@ func init() {
 
 	createRuleCmd.MarkFlagsMutuallyExclusive("zone", "domain")
 	createRuleCmd.MarkFlagsRequiredTogether("rl-period", "rl-requests")
-	_ = createRuleCmd.MarkFlagRequired("ruleset-id")
+	createRuleCmd.MarkFlagsMutuallyExclusive("ruleset-id", "phase")
+	createRuleCmd.MarkFlagsOneRequired("ruleset-id", "phase")
 	_ = createRuleCmd.MarkFlagRequired("expression")
 	_ = createRuleCmd.MarkFlagRequired("action")
 	_ = createRuleCmd.MarkFlagRequired("description")
@@ -139,13 +150,32 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	rulesetID, created := createRuleRulesetID, false
+	if createRulePhase != "" {
+		ep, err := cx.Client.Rulesets.Phases.Get(cmd.Context(), rulesets.Phase(createRulePhase), rulesets.PhaseGetParams{ZoneID: cf.F(cx.ZoneID)})
+		var apiErr *cf.Error
+		switch {
+		case err == nil:
+			rulesetID = ep.ID
+		case errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound:
+			created = true
+		default:
+			p.Error("API error: %v", err)
+			return err
+		}
+	}
+	target := "ruleset " + rulesetID
+	if created {
+		target = "a new empty " + createRulePhase + " entrypoint ruleset"
+	}
+
 	position := ""
 	if createRuleBefore != "" {
 		position = fmt.Sprintf(" before rule %s", createRuleBefore)
 	}
 	if cmdutil.DryRun(p, createRuleDryRun,
-		"add %s rule %q to ruleset %s in zone %s%s with expression: %s%s",
-		action, createRuleDescription, createRuleRulesetID, cx.ZoneID, position, createRuleExpression, rlDesc) {
+		"add %s rule %q to %s in zone %s%s with expression: %s%s",
+		action, createRuleDescription, target, cx.ZoneID, position, createRuleExpression, rlDesc) {
 		return nil
 	}
 
@@ -162,9 +192,25 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 		body.Position = cf.F[interface{}](map[string]interface{}{"before": createRuleBefore})
 	}
 
-	p.Info("Adding rule to ruleset %s in zone %s…", createRuleRulesetID, cx.ZoneID)
+	if created {
+		rs, err := cx.Client.Rulesets.New(cmd.Context(), rulesets.RulesetNewParams{
+			ZoneID: cf.F(cx.ZoneID),
+			Kind:   cf.F(rulesets.KindZone),
+			Name:   cf.F("default"),
+			Phase:  cf.F(rulesets.Phase(createRulePhase)),
+			Rules:  cf.F([]rulesets.RulesetNewParamsRuleUnion{}),
+		})
+		if err != nil {
+			p.Error("API error creating %s entrypoint: %v", createRulePhase, err)
+			return err
+		}
+		rulesetID = rs.ID
+		p.Info("Created empty %s entrypoint ruleset %s.", createRulePhase, rulesetID)
+	}
 
-	res, err := cx.Client.Rulesets.Rules.New(cmd.Context(), createRuleRulesetID, rulesets.RuleNewParams{
+	p.Info("Adding rule to ruleset %s in zone %s…", rulesetID, cx.ZoneID)
+
+	res, err := cx.Client.Rulesets.Rules.New(cmd.Context(), rulesetID, rulesets.RuleNewParams{
 		ZoneID: cf.F(cx.ZoneID),
 		Body:   body,
 	})
@@ -174,6 +220,7 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 	}
 
 	result := createRuleResult{
+		RulesetCreated: created,
 		RulesetID:      res.ID,
 		RulesetName:    res.Name,
 		RulesetVersion: res.Version,

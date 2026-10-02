@@ -1,6 +1,7 @@
 package waf
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -30,6 +31,8 @@ type ruleResult struct {
 	Categories  []string `json:"categories,omitempty"   toon:"categories,omitempty"`
 	Version     string   `json:"version,omitempty"      toon:"version,omitempty"`
 	LastUpdated string   `json:"last_updated,omitempty" toon:"last_updated,omitempty"`
+	// Ratelimit is the rule's rate-limit block as the API sent it (http_ratelimit phase only).
+	Ratelimit json.RawMessage `json:"ratelimit,omitempty" toon:"ratelimit,omitempty"`
 }
 
 // rulesetRulesResult wraps the ruleset metadata with its rules.
@@ -91,6 +94,10 @@ func runListRules(cmd *cobra.Command, _ []string) error {
 		Rules:     make([]ruleResult, 0, len(res.Rules)),
 	}
 	for i, r := range res.Rules {
+		var raw struct {
+			Ratelimit json.RawMessage `json:"ratelimit"`
+		}
+		_ = json.Unmarshal([]byte(r.JSON.RawJSON()), &raw)
 		result.Rules = append(result.Rules, ruleResult{
 			Index:       i + 1,
 			ID:          r.ID,
@@ -101,6 +108,7 @@ func runListRules(cmd *cobra.Command, _ []string) error {
 			Categories:  ruleinfo.Categories(r.Categories),
 			Version:     r.Version,
 			LastUpdated: r.LastUpdated.String(),
+			Ratelimit:   raw.Ratelimit,
 		})
 	}
 

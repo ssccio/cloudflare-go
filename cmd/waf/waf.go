@@ -21,5 +21,6 @@ func init() {
 	Cmd.AddCommand(createRuleCmd)
 	Cmd.AddCommand(updateRuleCmd)
 	Cmd.AddCommand(deleteRuleCmd)
+	Cmd.AddCommand(deleteRulesetCmd)
 	Cmd.AddCommand(securityLevelCmd)
 }
