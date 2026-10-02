@@ -15,4 +15,6 @@ func init() {
 	Cmd.AddCommand(trafficCmd)
 	Cmd.AddCommand(threatsCmd)
 	Cmd.AddCommand(wafEventsCmd)
+	Cmd.AddCommand(rlBaselineCmd)
+	Cmd.AddCommand(ruleHitsCmd)
 }
