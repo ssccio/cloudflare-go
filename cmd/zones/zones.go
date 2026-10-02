@@ -15,4 +15,5 @@ func init() {
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(lookupCmd)
 	Cmd.AddCommand(settingsCmd)
+	Cmd.AddCommand(subscriptionCmd)
 }
