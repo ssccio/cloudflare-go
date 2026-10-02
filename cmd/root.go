@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ssccio/cloudflare-go/cmd/analytics"
+	"github.com/ssccio/cloudflare-go/cmd/bots"
 	"github.com/ssccio/cloudflare-go/cmd/bulk"
 	"github.com/ssccio/cloudflare-go/cmd/cache"
 	"github.com/ssccio/cloudflare-go/cmd/customhostnames"
@@ -74,6 +75,7 @@ func init() {
 		"JMESPath expression to filter --json or --toon output (e.g. '[].id')")
 
 	rootCmd.AddCommand(analytics.Cmd)
+	rootCmd.AddCommand(bots.Cmd)
 	rootCmd.AddCommand(bulk.Cmd)
 	rootCmd.AddCommand(cache.Cmd)
 	rootCmd.AddCommand(customhostnames.Cmd)
