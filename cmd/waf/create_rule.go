@@ -24,6 +24,12 @@ var (
 	createRuleEnabled     bool
 	createRuleBefore      string
 	createRuleDryRun      bool
+
+	createRuleRLCharacteristics []string
+	createRuleRLPeriod          int
+	createRuleRLRequests        int
+	createRuleRLTimeout         int
+	createRuleRLCounting        string
 )
 
 // validActions maps the accepted --action values to the SDK enum. Only the
@@ -56,6 +62,11 @@ silently drop rules.
 
 Actions: block, challenge, js_challenge, managed_challenge, log, skip
 
+Rate-limit rules (http_ratelimit phase) take --rl-period and --rl-requests;
+--rl-characteristics defaults to ip.src and always includes cf.colo.id, which
+Cloudflare requires. --rl-counting-expression counts a different set of requests
+than the ones the rule acts on.
+
 Use --before with an existing rule ID to insert ahead of that rule, which is how
 a skip rule is placed in front of the execute rules it needs to pre-empt.
 
@@ -67,7 +78,11 @@ Examples:
     --description 'Allowlist office' --before EXISTING_RULE_ID
   cf waf create-rule --zone ZONE_ID --ruleset-id RULESET_ID \
     --expression 'http.host eq "api.example.com"' --action log \
-    --description 'Observe API' --dry-run`,
+    --description 'Observe API' --dry-run
+  cf waf create-rule --zone ZONE_ID --ruleset-id RATELIMIT_RULESET_ID \
+    --expression 'not starts_with(http.request.uri.path, "/api/")' --action managed_challenge \
+    --description 'Per-ASN rate limit' --rl-characteristics ip.geoip.asnum \
+    --rl-period 60 --rl-requests 600 --rl-mitigation-timeout 600 --dry-run`,
 	RunE: runCreateRule,
 }
 
@@ -82,7 +97,14 @@ func init() {
 	createRuleCmd.Flags().StringVar(&createRuleBefore, "before", "", "Insert ahead of this existing rule ID")
 	createRuleCmd.Flags().BoolVar(&createRuleDryRun, "dry-run", false, "Show what would be created without calling the API")
 
+	createRuleCmd.Flags().StringSliceVar(&createRuleRLCharacteristics, "rl-characteristics", nil, "Rate limit: fields to count by (default ip.src; cf.colo.id is always added)")
+	createRuleCmd.Flags().IntVar(&createRuleRLPeriod, "rl-period", 0, "Rate limit: counting period in seconds (10, 60, 120, 300, 600, 3600)")
+	createRuleCmd.Flags().IntVar(&createRuleRLRequests, "rl-requests", 0, "Rate limit: requests allowed per period")
+	createRuleCmd.Flags().IntVar(&createRuleRLTimeout, "rl-mitigation-timeout", 0, "Rate limit: seconds the action stays applied once triggered (0 = only while over the limit)")
+	createRuleCmd.Flags().StringVar(&createRuleRLCounting, "rl-counting-expression", "", "Rate limit: expression selecting which requests count (default: the rule expression)")
+
 	createRuleCmd.MarkFlagsMutuallyExclusive("zone", "domain")
+	createRuleCmd.MarkFlagsRequiredTogether("rl-period", "rl-requests")
 	_ = createRuleCmd.MarkFlagRequired("ruleset-id")
 	_ = createRuleCmd.MarkFlagRequired("expression")
 	_ = createRuleCmd.MarkFlagRequired("action")
@@ -99,19 +121,31 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	ratelimit := buildRatelimit()
+
 	cx, err := cmdutil.Zone(cmd, createRuleZone, createRuleDomain)
 	if err != nil {
 		return err
 	}
 	p := cx.Printer
 
+	rlDesc := ""
+	if ratelimit != nil {
+		rlDesc = fmt.Sprintf(" and rate limit %d requests/%ds by %s (mitigation %ds)",
+			createRuleRLRequests, createRuleRLPeriod,
+			strings.Join(ratelimit["characteristics"].([]string), "+"), createRuleRLTimeout)
+		if createRuleRLCounting != "" {
+			rlDesc += fmt.Sprintf(", counting: %s", createRuleRLCounting)
+		}
+	}
+
 	position := ""
 	if createRuleBefore != "" {
 		position = fmt.Sprintf(" before rule %s", createRuleBefore)
 	}
 	if cmdutil.DryRun(p, createRuleDryRun,
-		"add %s rule %q to ruleset %s in zone %s%s with expression: %s",
-		action, createRuleDescription, createRuleRulesetID, cx.ZoneID, position, createRuleExpression) {
+		"add %s rule %q to ruleset %s in zone %s%s with expression: %s%s",
+		action, createRuleDescription, createRuleRulesetID, cx.ZoneID, position, createRuleExpression, rlDesc) {
 		return nil
 	}
 
@@ -120,6 +154,9 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 		Description: cf.F(createRuleDescription),
 		Enabled:     cf.F(createRuleEnabled),
 		Expression:  cf.F(createRuleExpression),
+	}
+	if ratelimit != nil {
+		body.Ratelimit = cf.F[interface{}](ratelimit)
 	}
 	if createRuleBefore != "" {
 		body.Position = cf.F[interface{}](map[string]interface{}{"before": createRuleBefore})
@@ -178,6 +215,35 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 		{"Expression", result.Rule.Expression},
 	})
 	return nil
+}
+
+// buildRatelimit returns the ratelimit object for the request body, or nil when
+// no rate-limit flags were given.
+func buildRatelimit() map[string]interface{} {
+	if createRuleRLPeriod == 0 {
+		return nil
+	}
+	chars := []string{}
+	for _, c := range createRuleRLCharacteristics {
+		if c != "cf.colo.id" {
+			chars = append(chars, c)
+		}
+	}
+	if len(chars) == 0 {
+		chars = append(chars, "ip.src")
+	}
+	chars = append(chars, "cf.colo.id")
+
+	rl := map[string]interface{}{
+		"characteristics":     chars,
+		"period":              createRuleRLPeriod,
+		"requests_per_period": createRuleRLRequests,
+		"mitigation_timeout":  createRuleRLTimeout,
+	}
+	if createRuleRLCounting != "" {
+		rl["counting_expression"] = createRuleRLCounting
+	}
+	return rl
 }
 
 // actionList renders the accepted --action values in a stable order.
