@@ -382,7 +382,7 @@ query HTTPRequestByRayID($zoneTag: string! $rayName: string! $since: Time! $unti
         datetime rayName clientIP
         clientRequestHTTPHost clientRequestPath
         edgeResponseStatus originResponseStatus
-        cacheStatus clientRequestUserAgent
+        cacheStatus userAgent
       }
     }
   }
@@ -401,7 +401,7 @@ query HTTPRequestByRayID($zoneTag: string! $rayName: string! $since: Time! $unti
 						EdgeResponseStatus   int       `json:"edgeResponseStatus"`
 						OriginResponseStatus int       `json:"originResponseStatus"`
 						CacheStatus          string    `json:"cacheStatus"`
-						UserAgent            string    `json:"clientRequestUserAgent"`
+						UserAgent            string    `json:"userAgent"`
 					} `json:"httpRequestsAdaptive"`
 				} `json:"zones"`
 			} `json:"viewer"`
