@@ -33,6 +33,8 @@ type ruleResult struct {
 	LastUpdated string   `json:"last_updated,omitempty" toon:"last_updated,omitempty"`
 	// Ratelimit is the rule's rate-limit block as the API sent it (http_ratelimit phase only).
 	Ratelimit json.RawMessage `json:"ratelimit,omitempty" toon:"ratelimit,omitempty"`
+	// ActionParameters is the rule's action_parameters block as the API sent it.
+	ActionParameters json.RawMessage `json:"action_parameters,omitempty" toon:"action_parameters,omitempty"`
 }
 
 // rulesetRulesResult wraps the ruleset metadata with its rules.
@@ -95,7 +97,8 @@ func runListRules(cmd *cobra.Command, _ []string) error {
 	}
 	for i, r := range res.Rules {
 		var raw struct {
-			Ratelimit json.RawMessage `json:"ratelimit"`
+			Ratelimit        json.RawMessage `json:"ratelimit"`
+			ActionParameters json.RawMessage `json:"action_parameters"`
 		}
 		_ = json.Unmarshal([]byte(r.JSON.RawJSON()), &raw)
 		result.Rules = append(result.Rules, ruleResult{
@@ -109,6 +112,8 @@ func runListRules(cmd *cobra.Command, _ []string) error {
 			Version:     r.Version,
 			LastUpdated: r.LastUpdated.String(),
 			Ratelimit:   raw.Ratelimit,
+
+			ActionParameters: raw.ActionParameters,
 		})
 	}
 

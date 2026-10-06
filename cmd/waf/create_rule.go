@@ -1,6 +1,7 @@
 package waf
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,16 +18,17 @@ import (
 )
 
 var (
-	createRuleZone        string
-	createRuleDomain      string
-	createRuleRulesetID   string
-	createRulePhase       string
-	createRuleExpression  string
-	createRuleAction      string
-	createRuleDescription string
-	createRuleEnabled     bool
-	createRuleBefore      string
-	createRuleDryRun      bool
+	createRuleZone         string
+	createRuleDomain       string
+	createRuleRulesetID    string
+	createRulePhase        string
+	createRuleExpression   string
+	createRuleAction       string
+	createRuleDescription  string
+	createRuleEnabled      bool
+	createRuleBefore       string
+	createRuleDryRun       bool
+	createRuleActionParams string
 
 	createRuleRLCharacteristics []string
 	createRuleRLPeriod          int
@@ -44,6 +46,8 @@ var validActions = map[string]rulesets.RuleNewParamsBodyAction{
 	"managed_challenge": rulesets.RuleNewParamsBodyActionManagedChallenge,
 	"log":               rulesets.RuleNewParamsBodyActionLog,
 	"skip":              rulesets.RuleNewParamsBodyActionSkip,
+
+	"set_cache_settings": rulesets.RuleNewParamsBodyActionSetCacheSettings,
 }
 
 // createRuleResult is the serialisable result of a rule creation.
@@ -64,7 +68,11 @@ This uses the per-rule endpoint, so only the new rule is sent. It does not read
 and rewrite the whole ruleset, which would race with concurrent edits and can
 silently drop rules.
 
-Actions: block, challenge, js_challenge, managed_challenge, log, skip
+Actions: block, challenge, js_challenge, managed_challenge, log, skip,
+set_cache_settings
+
+--action-parameters is the rule's action_parameters object as JSON, sent as
+given. set_cache_settings requires it; for a cache bypass use '{"cache": false}'.
 
 Rate-limit rules (http_ratelimit phase) take --rl-period and --rl-requests;
 --rl-characteristics defaults to ip.src and always includes cf.colo.id, which
@@ -91,7 +99,11 @@ Examples:
   cf waf create-rule --zone ZONE_ID --ruleset-id RATELIMIT_RULESET_ID \
     --expression 'not starts_with(http.request.uri.path, "/api/")' --action managed_challenge \
     --description 'Per-ASN rate limit' --rl-characteristics ip.geoip.asnum \
-    --rl-period 60 --rl-requests 600 --rl-mitigation-timeout 600 --dry-run`,
+    --rl-period 60 --rl-requests 600 --rl-mitigation-timeout 600 --dry-run
+  cf waf create-rule --zone ZONE_ID --phase http_request_cache_settings \
+    --expression 'starts_with(http.request.uri.path, "/system/files/")' \
+    --action set_cache_settings --action-parameters '{"cache": false}' \
+    --description 'Bypass cache for private files' --dry-run`,
 	RunE: runCreateRule,
 }
 
@@ -106,6 +118,7 @@ func init() {
 	createRuleCmd.Flags().BoolVar(&createRuleEnabled, "enabled", true, "Whether the rule is active")
 	createRuleCmd.Flags().StringVar(&createRuleBefore, "before", "", "Insert ahead of this existing rule ID")
 	createRuleCmd.Flags().BoolVar(&createRuleDryRun, "dry-run", false, "Show what would be created without calling the API")
+	createRuleCmd.Flags().StringVar(&createRuleActionParams, "action-parameters", "", `Action parameters as a JSON object, e.g. '{"cache": false}' (required for set_cache_settings)`)
 
 	createRuleCmd.Flags().StringSliceVar(&createRuleRLCharacteristics, "rl-characteristics", nil, "Rate limit: fields to count by (default ip.src; cf.colo.id is always added)")
 	createRuleCmd.Flags().IntVar(&createRuleRLPeriod, "rl-period", 0, "Rate limit: counting period in seconds (10, 60, 120, 300, 600, 3600)")
@@ -128,6 +141,22 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 	if !ok {
 		p, _ := cmdutil.Setup(cmd)
 		err := fmt.Errorf("invalid --action %q; valid values: %s", createRuleAction, actionList())
+		p.Error("%v", err)
+		return err
+	}
+
+	var actionParams map[string]interface{}
+	if createRuleActionParams != "" {
+		if err := json.Unmarshal([]byte(createRuleActionParams), &actionParams); err != nil {
+			p, _ := cmdutil.Setup(cmd)
+			err = fmt.Errorf("invalid --action-parameters: must be a JSON object: %v", err)
+			p.Error("%v", err)
+			return err
+		}
+	}
+	if action == rulesets.RuleNewParamsBodyActionSetCacheSettings && actionParams == nil {
+		p, _ := cmdutil.Setup(cmd)
+		err := errors.New("--action set_cache_settings requires --action-parameters")
 		p.Error("%v", err)
 		return err
 	}
@@ -173,6 +202,9 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 	if createRuleBefore != "" {
 		position = fmt.Sprintf(" before rule %s", createRuleBefore)
 	}
+	if actionParams != nil {
+		rlDesc += fmt.Sprintf(" and action parameters %s", createRuleActionParams)
+	}
 	if cmdutil.DryRun(p, createRuleDryRun,
 		"add %s rule %q to %s in zone %s%s with expression: %s%s",
 		action, createRuleDescription, target, cx.ZoneID, position, createRuleExpression, rlDesc) {
@@ -187,6 +219,9 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 	}
 	if ratelimit != nil {
 		body.Ratelimit = cf.F[interface{}](ratelimit)
+	}
+	if actionParams != nil {
+		body.ActionParameters = cf.F[interface{}](actionParams)
 	}
 	if createRuleBefore != "" {
 		body.Position = cf.F[interface{}](map[string]interface{}{"before": createRuleBefore})
@@ -230,6 +265,10 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 	// locate the rule we asked for by its description and expression.
 	for i, r := range res.Rules {
 		if r.Description == createRuleDescription && r.Expression == createRuleExpression {
+			var raw struct {
+				ActionParameters json.RawMessage `json:"action_parameters"`
+			}
+			_ = json.Unmarshal([]byte(r.JSON.RawJSON()), &raw)
 			result.Rule = ruleResult{
 				Index:       i + 1,
 				ID:          r.ID,
@@ -240,6 +279,8 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 				Categories:  ruleinfo.Categories(r.Categories),
 				Version:     r.Version,
 				LastUpdated: r.LastUpdated.String(),
+
+				ActionParameters: raw.ActionParameters,
 			}
 			break
 		}
@@ -260,6 +301,7 @@ func runCreateRule(cmd *cobra.Command, _ []string) error {
 		{"Action", result.Rule.Action},
 		{"Enabled", fmt.Sprintf("%v", result.Rule.Enabled)},
 		{"Expression", result.Rule.Expression},
+		{"Action parameters", string(result.Rule.ActionParameters)},
 	})
 	return nil
 }
