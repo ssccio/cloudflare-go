@@ -147,9 +147,10 @@ func runUpdateRule(cmd *cobra.Command, _ []string) error {
 		changes = append(changes, fmt.Sprintf("expression: %s → %s", previous.Expression, updateRuleExpression))
 	}
 	if flags.Changed("action") && action != previous.Action {
-		// Skip rules carry action parameters naming what to skip; they can't be
-		// carried across to another action or invented from nothing.
-		if action == "skip" || previous.Action == "skip" {
+		// Skip and cache rules carry action parameters that can't be carried
+		// across to another action or invented from nothing.
+		if action == "skip" || previous.Action == "skip" ||
+			action == "set_cache_settings" || previous.Action == "set_cache_settings" {
 			err := fmt.Errorf("cannot change action between %s and %s in place; create a new rule and delete this one", previous.Action, action)
 			p.Error("%v", err)
 			return err
