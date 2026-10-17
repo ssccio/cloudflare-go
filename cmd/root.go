@@ -13,6 +13,7 @@ import (
 	"github.com/ssccio/cloudflare-go/cmd/customhostnames"
 	"github.com/ssccio/cloudflare-go/cmd/dns"
 	"github.com/ssccio/cloudflare-go/cmd/health"
+	"github.com/ssccio/cloudflare-go/cmd/inventory"
 	"github.com/ssccio/cloudflare-go/cmd/logpush"
 	"github.com/ssccio/cloudflare-go/cmd/rayid"
 	"github.com/ssccio/cloudflare-go/cmd/ssl"
@@ -82,6 +83,7 @@ func init() {
 	rootCmd.AddCommand(customhostnames.Cmd)
 	rootCmd.AddCommand(dns.Cmd)
 	rootCmd.AddCommand(health.Cmd)
+	rootCmd.AddCommand(inventory.Cmd)
 	rootCmd.AddCommand(logpush.Cmd)
 	rootCmd.AddCommand(rayid.Cmd)
 	rootCmd.AddCommand(ssl.Cmd)
