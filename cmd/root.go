@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ssccio/cloudflare-go/cmd/access"
 	"github.com/ssccio/cloudflare-go/cmd/analytics"
 	"github.com/ssccio/cloudflare-go/cmd/bots"
 	"github.com/ssccio/cloudflare-go/cmd/bulk"
@@ -17,6 +18,7 @@ import (
 	"github.com/ssccio/cloudflare-go/cmd/logpush"
 	"github.com/ssccio/cloudflare-go/cmd/rayid"
 	"github.com/ssccio/cloudflare-go/cmd/ssl"
+	"github.com/ssccio/cloudflare-go/cmd/tunnels"
 	"github.com/ssccio/cloudflare-go/cmd/waf"
 	"github.com/ssccio/cloudflare-go/cmd/zones"
 )
@@ -76,6 +78,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&Flags.Query, "query", "",
 		"JMESPath expression to filter --json or --toon output (e.g. '[].id')")
 
+	rootCmd.AddCommand(access.Cmd)
 	rootCmd.AddCommand(analytics.Cmd)
 	rootCmd.AddCommand(bots.Cmd)
 	rootCmd.AddCommand(bulk.Cmd)
@@ -87,6 +90,7 @@ func init() {
 	rootCmd.AddCommand(logpush.Cmd)
 	rootCmd.AddCommand(rayid.Cmd)
 	rootCmd.AddCommand(ssl.Cmd)
+	rootCmd.AddCommand(tunnels.Cmd)
 	rootCmd.AddCommand(waf.Cmd)
 	rootCmd.AddCommand(zones.Cmd)
 }
