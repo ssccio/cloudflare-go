@@ -7,9 +7,10 @@ import "github.com/spf13/cobra"
 var Cmd = &cobra.Command{
 	Use:   "tunnels",
 	Short: "Manage Cloudflare Tunnels",
-	Long:  "Create remotely managed Cloudflare Tunnels (cloudflared).",
+	Long:  "Create remotely managed Cloudflare Tunnels (cloudflared) and set their ingress.",
 }
 
 func init() {
 	Cmd.AddCommand(createCmd)
+	Cmd.AddCommand(ingressCmd)
 }
