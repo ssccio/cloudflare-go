@@ -4,6 +4,9 @@ package logpush
 
 import (
 	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
 
 	cf "github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/logpush"
@@ -29,6 +32,7 @@ func init() {
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(ownershipCmd)
 	Cmd.AddCommand(createCmd)
+	Cmd.AddCommand(updateCmd)
 	Cmd.AddCommand(deleteCmd)
 }
 
@@ -47,10 +51,15 @@ type JobRow struct {
 	LastComplete string `json:"last_complete" toon:"last_complete"`
 	LastError    string `json:"last_error"    toon:"last_error"`
 	ErrorMessage string `json:"error_message" toon:"error_message"`
+	// SampleRate is 1 for an unsampled job. The API omits it when unset,
+	// which also means unsampled.
+	SampleRate float64  `json:"sample_rate" toon:"sample_rate"`
+	Fields     []string `json:"fields"      toon:"fields"`
 }
 
 func jobRow(j logpush.LogpushJob) JobRow {
-	r := JobRow{ID: j.ID, Name: j.Name, Dataset: string(j.Dataset), Enabled: j.Enabled, Destination: j.DestinationConf, ErrorMessage: j.ErrorMessage}
+	r := JobRow{ID: j.ID, Name: j.Name, Dataset: string(j.Dataset), Enabled: j.Enabled, Destination: cmdutil.RedactDestination(j.DestinationConf), ErrorMessage: j.ErrorMessage}
+	r.SampleRate, r.Fields = jobFields(j)
 	if !j.LastComplete.IsZero() {
 		r.LastComplete = j.LastComplete.UTC().Format("2006-01-02T15:04:05Z")
 	}
@@ -60,11 +69,38 @@ func jobRow(j logpush.LogpushJob) JobRow {
 	return r
 }
 
+// jobFields reads the sample rate and field list from output_options, or
+// from the legacy logpull_options query string on older jobs.
+func jobFields(j logpush.LogpushJob) (float64, []string) {
+	rate, fields := j.OutputOptions.SampleRate, j.OutputOptions.FieldNames
+	if len(fields) == 0 && j.LogpullOptions != "" {
+		if q, err := url.ParseQuery(strings.TrimPrefix(j.LogpullOptions, "?")); err == nil {
+			if f := q.Get("fields"); f != "" {
+				fields = strings.Split(f, ",")
+			}
+			if s := q.Get("sample"); s != "" {
+				if v, err := strconv.ParseFloat(s, 64); err == nil {
+					rate = v
+				}
+			}
+		}
+	}
+	if rate == 0 {
+		rate = 1
+	}
+	if fields == nil {
+		fields = []string{}
+	}
+	return rate, fields
+}
+
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List a zone's Logpush jobs",
 	Long: `List the zone's Logpush jobs with their dataset, destination and last
 push times. A job whose last_error is newer than last_complete is failing.
+SAMPLE is 1 for an unsampled job. --json lists every field the job pushes.
+Destinations are shown without credentials.
 
 Examples:
   cf logpush list --domain example.com
@@ -105,8 +141,8 @@ func runList(cmd *cobra.Command, _ []string) error {
 	}
 	table := make([][]string, 0, len(rows))
 	for _, r := range rows {
-		table = append(table, []string{fmt.Sprint(r.ID), r.Name, r.Dataset, fmt.Sprint(r.Enabled), r.Destination, r.LastComplete, r.LastError})
+		table = append(table, []string{fmt.Sprint(r.ID), r.Name, r.Dataset, fmt.Sprint(r.Enabled), r.Destination, fmt.Sprint(r.SampleRate), fmt.Sprint(len(r.Fields)), r.LastComplete, r.LastError})
 	}
-	p.Table([]string{"ID", "NAME", "DATASET", "ENABLED", "DESTINATION", "LAST_COMPLETE", "LAST_ERROR"}, table)
+	p.Table([]string{"ID", "NAME", "DATASET", "ENABLED", "DESTINATION", "SAMPLE", "FIELDS", "LAST_COMPLETE", "LAST_ERROR"}, table)
 	return nil
 }
