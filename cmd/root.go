@@ -12,14 +12,18 @@ import (
 	"github.com/ssccio/cloudflare-go/cmd/bulk"
 	"github.com/ssccio/cloudflare-go/cmd/cache"
 	"github.com/ssccio/cloudflare-go/cmd/customhostnames"
+	"github.com/ssccio/cloudflare-go/cmd/d1"
 	"github.com/ssccio/cloudflare-go/cmd/dns"
 	"github.com/ssccio/cloudflare-go/cmd/health"
 	"github.com/ssccio/cloudflare-go/cmd/inventory"
 	"github.com/ssccio/cloudflare-go/cmd/logpush"
+	"github.com/ssccio/cloudflare-go/cmd/queues"
+	"github.com/ssccio/cloudflare-go/cmd/r2"
 	"github.com/ssccio/cloudflare-go/cmd/rayid"
 	"github.com/ssccio/cloudflare-go/cmd/ssl"
 	"github.com/ssccio/cloudflare-go/cmd/tunnels"
 	"github.com/ssccio/cloudflare-go/cmd/waf"
+	"github.com/ssccio/cloudflare-go/cmd/workers"
 	"github.com/ssccio/cloudflare-go/cmd/zones"
 )
 
@@ -84,13 +88,17 @@ func init() {
 	rootCmd.AddCommand(bulk.Cmd)
 	rootCmd.AddCommand(cache.Cmd)
 	rootCmd.AddCommand(customhostnames.Cmd)
+	rootCmd.AddCommand(d1.Cmd)
 	rootCmd.AddCommand(dns.Cmd)
 	rootCmd.AddCommand(health.Cmd)
 	rootCmd.AddCommand(inventory.Cmd)
 	rootCmd.AddCommand(logpush.Cmd)
+	rootCmd.AddCommand(queues.Cmd)
+	rootCmd.AddCommand(r2.Cmd)
 	rootCmd.AddCommand(rayid.Cmd)
 	rootCmd.AddCommand(ssl.Cmd)
 	rootCmd.AddCommand(tunnels.Cmd)
 	rootCmd.AddCommand(waf.Cmd)
+	rootCmd.AddCommand(workers.Cmd)
 	rootCmd.AddCommand(zones.Cmd)
 }

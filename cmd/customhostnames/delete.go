@@ -1,6 +1,8 @@
 package customhostnames
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	cf "github.com/cloudflare/cloudflare-go/v6"
@@ -12,17 +14,19 @@ import (
 var (
 	deleteZone       string
 	deleteDomain     string
+	deleteHostname   string
 	deleteHostnameID string
 	deleteDryRun     bool
 )
 
 var deleteCmd = &cobra.Command{
 	Use:   "delete",
-	Short: "Delete a custom hostname by ID",
-	Long: `Delete a custom hostname. The custom hostname ID is required — use
-` + "`cf custom-hostnames list`" + ` or ` + "`cf custom-hostnames get`" + ` to find it.
+	Short: "Delete a custom hostname by name or ID",
+	Long: `Delete a custom hostname, looked up by name with --hostname or given
+directly with --hostname-id.
 
 Examples:
+  cf custom-hostnames delete --domain example.com --hostname learn.customer.com --dry-run
   cf custom-hostnames delete --domain example.com --hostname-id HOSTNAME_ID
   cf custom-hostnames delete --zone ZONE_ID --hostname-id HOSTNAME_ID --dry-run`,
 	RunE: runDelete,
@@ -31,11 +35,13 @@ Examples:
 func init() {
 	deleteCmd.Flags().StringVar(&deleteZone, "zone", "", "Zone ID")
 	deleteCmd.Flags().StringVar(&deleteDomain, "domain", "", "Domain name (resolved to zone ID automatically)")
-	deleteCmd.Flags().StringVar(&deleteHostnameID, "hostname-id", "", "Custom hostname ID to delete (required)")
+	deleteCmd.Flags().StringVar(&deleteHostname, "hostname", "", "Custom hostname to delete")
+	deleteCmd.Flags().StringVar(&deleteHostnameID, "hostname-id", "", "Custom hostname ID to delete")
 	deleteCmd.Flags().BoolVar(&deleteDryRun, "dry-run", false, "Show what would be deleted without calling the API")
 
 	deleteCmd.MarkFlagsMutuallyExclusive("zone", "domain")
-	_ = deleteCmd.MarkFlagRequired("hostname-id")
+	deleteCmd.MarkFlagsMutuallyExclusive("hostname", "hostname-id")
+	deleteCmd.MarkFlagsOneRequired("hostname", "hostname-id")
 }
 
 func runDelete(cmd *cobra.Command, _ []string) error {
@@ -45,11 +51,23 @@ func runDelete(cmd *cobra.Command, _ []string) error {
 	}
 	p := ctx.Printer
 
-	if cmdutil.DryRun(p, deleteDryRun, "delete custom hostname %s from zone %s", deleteHostnameID, ctx.ZoneID) {
+	target := deleteHostnameID
+	if deleteHostname != "" {
+		p.Info("Looking up %s in zone %s…", deleteHostname, ctx.ZoneID)
+		existing, err := findByHostname(cmd.Context(), ctx.Client, ctx.ZoneID, deleteHostname)
+		if err != nil {
+			p.Error("%v", err)
+			return err
+		}
+		deleteHostnameID = existing.ID
+		target = fmt.Sprintf("%s (%s)", existing.Hostname, existing.ID)
+	}
+
+	if cmdutil.DryRun(p, deleteDryRun, "delete custom hostname %s from zone %s", target, ctx.ZoneID) {
 		return nil
 	}
 
-	p.Info("Deleting custom hostname %s from zone %s…", deleteHostnameID, ctx.ZoneID)
+	p.Info("Deleting custom hostname %s from zone %s…", target, ctx.ZoneID)
 
 	resp, err := ctx.Client.CustomHostnames.Delete(cmd.Context(), deleteHostnameID, custom_hostnames.CustomHostnameDeleteParams{
 		ZoneID: cf.F(ctx.ZoneID),

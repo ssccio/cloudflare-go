@@ -66,7 +66,7 @@ func runCreate(cmd *cobra.Command, _ []string) error {
 	p := c.Printer
 
 	if cmdutil.DryRun(p, createDryRun, "create %s job %q on zone %s → %s, enabled=%v, %d fields: %s",
-		createDataset, createName, c.ZoneID, createDestination, !createDisabled, len(createFields), strings.Join(createFields, ",")) {
+		createDataset, createName, c.ZoneID, cmdutil.RedactDestination(createDestination), !createDisabled, len(createFields), strings.Join(createFields, ",")) {
 		return nil
 	}
 

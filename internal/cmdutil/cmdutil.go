@@ -4,6 +4,7 @@ package cmdutil
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 
 	cf "github.com/cloudflare/cloudflare-go/v6"
@@ -15,10 +16,49 @@ import (
 
 // Context carries everything a subcommand needs after flag parsing.
 type Context struct {
-	Printer *output.Printer
-	Client  *cf.Client
-	Token   string
-	ZoneID  string
+	Printer   *output.Printer
+	Client    *cf.Client
+	Token     string
+	ZoneID    string
+	AccountID string
+}
+
+// Account does the full Setup plus client construction for an account-scoped
+// command. account falls back to CLOUDFLARE_ACCOUNT_ID.
+func Account(cmd *cobra.Command, account string) (*Context, error) {
+	p, token := Setup(cmd)
+
+	if account == "" {
+		account = os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	}
+	if account == "" {
+		err := fmt.Errorf("--account is required (or set CLOUDFLARE_ACCOUNT_ID)")
+		p.Error("%v", err)
+		return nil, err
+	}
+
+	cfClient, err := client.New(client.Config{Token: token})
+	if err != nil {
+		p.Error("%v", err)
+		return nil, err
+	}
+	return &Context{Printer: p, Client: cfClient, Token: token, AccountID: account}, nil
+}
+
+// RedactDestination reduces a Logpush destination to the parts that carry no
+// credentials. Object-store destinations keep bucket and prefix; anything
+// else (http, sumo, splunk, datadog) keeps scheme and host only, since those
+// put tokens in the path, query or userinfo. Unparseable values are dropped.
+func RedactDestination(dest string) string {
+	u, err := url.Parse(dest)
+	if err != nil || u.Scheme == "" {
+		return "[redacted]"
+	}
+	switch u.Scheme {
+	case "s3", "r2", "gs", "azure":
+		return u.Scheme + "://" + u.Host + u.Path
+	}
+	return u.Scheme + "://" + u.Host + "/[redacted]"
 }
 
 // Setup reads the root persistent flags and returns a Printer plus the token.

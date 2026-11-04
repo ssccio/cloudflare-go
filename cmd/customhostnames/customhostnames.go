@@ -229,8 +229,12 @@ func findByHostname(ctx context.Context, c *cf.Client, zoneID, hostname string) 
 		ZoneID:   cf.F(zoneID),
 		Hostname: cf.F(hostname),
 	})
+	// Only an exact name match counts, so a lookup that feeds delete can
+	// never act on a different hostname the API returned.
 	for iter.Next() {
-		return fromListResponse(iter.Current()), nil
+		if strings.EqualFold(iter.Current().Hostname, hostname) {
+			return fromListResponse(iter.Current()), nil
+		}
 	}
 	if err := iter.Err(); err != nil {
 		return customHostnameResult{}, fmt.Errorf("looking up custom hostname %q: %w", hostname, err)

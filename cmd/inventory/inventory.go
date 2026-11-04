@@ -6,7 +6,6 @@ package inventory
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go/v6"
@@ -244,7 +243,7 @@ func collectZone(ctx context.Context, c *cf.Client, z zones.Zone) zoneInventory 
 	} else {
 		for _, j := range lp.Result {
 			zi.Logpush = append(zi.Logpush, logpushJob{
-				ID: j.ID, Name: j.Name, Dataset: string(j.Dataset), Enabled: j.Enabled, Destination: stripQuery(j.DestinationConf),
+				ID: j.ID, Name: j.Name, Dataset: string(j.Dataset), Enabled: j.Enabled, Destination: cmdutil.RedactDestination(j.DestinationConf),
 			})
 		}
 	}
@@ -261,22 +260,6 @@ func collectZone(ctx context.Context, c *cf.Client, z zones.Zone) zoneInventory 
 	}
 
 	return zi
-}
-
-// stripQuery reduces a Logpush destination to the parts that carry no
-// credentials. Object-store destinations keep bucket and prefix; anything
-// else (http, sumo, splunk, datadog) keeps scheme and host only, since those
-// put tokens in the path, query or userinfo. Unparseable values are dropped.
-func stripQuery(dest string) string {
-	u, err := url.Parse(dest)
-	if err != nil || u.Scheme == "" {
-		return "[redacted]"
-	}
-	switch u.Scheme {
-	case "s3", "r2", "gs", "azure":
-		return u.Scheme + "://" + u.Host + u.Path
-	}
-	return u.Scheme + "://" + u.Host + "/[redacted]"
 }
 
 func printSummary(p *output.Printer, inv inventory) {
