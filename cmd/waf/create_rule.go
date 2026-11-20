@@ -49,13 +49,15 @@ var validActions = map[string]rulesets.RuleNewParamsBodyAction{
 
 	"set_cache_settings": rulesets.RuleNewParamsBodyActionSetCacheSettings,
 	"redirect":           rulesets.RuleNewParamsBodyActionRedirect,
+	"rewrite":            rulesets.RuleNewParamsBodyActionRewrite,
 }
 
 // requiresActionParams reports whether an action is meaningless without
-// --action-parameters (the cache settings or the redirect target).
+// --action-parameters (the cache settings, the redirect target or the rewrite).
 func requiresActionParams(a rulesets.RuleNewParamsBodyAction) bool {
 	return a == rulesets.RuleNewParamsBodyActionSetCacheSettings ||
-		a == rulesets.RuleNewParamsBodyActionRedirect
+		a == rulesets.RuleNewParamsBodyActionRedirect ||
+		a == rulesets.RuleNewParamsBodyActionRewrite
 }
 
 // createRuleResult is the serialisable result of a rule creation.
@@ -77,11 +79,12 @@ and rewrite the whole ruleset, which would race with concurrent edits and can
 silently drop rules.
 
 Actions: block, challenge, js_challenge, managed_challenge, log, skip,
-set_cache_settings, redirect
+set_cache_settings, redirect, rewrite
 
 --action-parameters is the rule's action_parameters object as JSON, sent as
-given. set_cache_settings and redirect require it; for a cache bypass use
+given. set_cache_settings, redirect and rewrite require it; for a cache bypass use
 '{"cache": false}'. Redirect rules go in the http_request_dynamic_redirect phase.
+Rewrite rules go in a transform phase, e.g. http_response_headers_transform.
 
 Rate-limit rules (http_ratelimit phase) take --rl-period and --rl-requests;
 --rl-characteristics defaults to ip.src and always includes cf.colo.id, which
@@ -116,7 +119,11 @@ Examples:
   cf waf create-rule --zone ZONE_ID --phase http_request_dynamic_redirect \
     --expression 'http.host eq "old.example.com"' --action redirect \
     --action-parameters '{"from_value":{"status_code":301,"preserve_query_string":true,"target_url":{"expression":"concat(\"https://new.example.com\", http.request.uri.path)"}}}' \
-    --description 'Redirect old host' --dry-run`,
+    --description 'Redirect old host' --dry-run
+  cf waf create-rule --zone ZONE_ID --phase http_response_headers_transform \
+    --expression 'true' --action rewrite \
+    --action-parameters '{"headers":{"X-Internal":{"operation":"remove"}}}' \
+    --description 'Remove internal response header' --dry-run`,
 	RunE: runCreateRule,
 }
 
@@ -131,7 +138,7 @@ func init() {
 	createRuleCmd.Flags().BoolVar(&createRuleEnabled, "enabled", true, "Whether the rule is active")
 	createRuleCmd.Flags().StringVar(&createRuleBefore, "before", "", "Insert ahead of this existing rule ID")
 	createRuleCmd.Flags().BoolVar(&createRuleDryRun, "dry-run", false, "Show what would be created without calling the API")
-	createRuleCmd.Flags().StringVar(&createRuleActionParams, "action-parameters", "", `Action parameters as a JSON object, e.g. '{"cache": false}' (required for set_cache_settings and redirect)`)
+	createRuleCmd.Flags().StringVar(&createRuleActionParams, "action-parameters", "", `Action parameters as a JSON object, e.g. '{"cache": false}' (required for set_cache_settings, redirect and rewrite)`)
 
 	createRuleCmd.Flags().StringSliceVar(&createRuleRLCharacteristics, "rl-characteristics", nil, "Rate limit: fields to count by (default ip.src; cf.colo.id is always added)")
 	createRuleCmd.Flags().IntVar(&createRuleRLPeriod, "rl-period", 0, "Rate limit: counting period in seconds (10, 60, 120, 300, 600, 3600)")

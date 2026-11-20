@@ -17,6 +17,9 @@ func TestRedirectIsValidAndNeedsParams(t *testing.T) {
 	if !requiresActionParams(rulesets.RuleNewParamsBodyActionSetCacheSettings) {
 		t.Error("set_cache_settings must require --action-parameters")
 	}
+	if a, ok := validActions["rewrite"]; !ok || !requiresActionParams(a) {
+		t.Error("rewrite must be valid and require --action-parameters")
+	}
 	if requiresActionParams(rulesets.RuleNewParamsBodyActionBlock) {
 		t.Error("block must not require --action-parameters")
 	}
